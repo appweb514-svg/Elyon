@@ -1,0 +1,31 @@
+PYTHON := python3
+PWD := $(shell pwd)
+
+.DEFAULT_GOAL := help
+
+.PHONY: help lint lint-python lint-web test test-python test-web dev
+
+help:
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
+
+lint: lint-python lint-web ## Lint Python et Web
+
+lint-python: ## Lint Python (ruff + mypy)
+	ruff check apps/api && ruff check player/agent
+	mypy apps/api/elyon_api
+	mypy player/agent/elyon_agent --config-file player/agent/pyproject.toml
+
+lint-web: ## Lint Web (eslint)
+	pnpm --filter @elyon/web exec eslint .
+
+test: test-python test-web ## Tests Python et Web
+
+test-python: ## Tests Python (pytest : api + agent)
+	pytest apps/api
+	pytest player/agent --rootdir=player/agent
+
+test-web: ## Tests Web (vitest)
+	pnpm --filter @elyon/web exec vitest run
+
+dev: ## Démarre l'environnement local avec Docker Compose
+	docker compose up -d
