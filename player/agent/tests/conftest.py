@@ -9,8 +9,21 @@ from elyon_api.main import create_app
 from elyon_api.models import Base
 from fastapi.testclient import TestClient
 
+from elyon_agent.client import ElyonClient
 from elyon_agent.config import AgentSettings
 from elyon_agent.state import DeviceState
+
+
+@pytest.fixture()
+def agent(app, api, agent_settings):
+    """Client HTTP de l'agent branché sur l'app FastAPI (transport de test)."""
+    client = ElyonClient(
+        agent_settings.server_url,
+        timeout=agent_settings.request_timeout_seconds,
+        transport=api._transport,  # noqa: SLF001 — transport de test du TestClient
+    )
+    yield client
+    client.close()
 
 
 @pytest.fixture()

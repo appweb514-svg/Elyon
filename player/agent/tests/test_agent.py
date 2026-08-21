@@ -12,23 +12,12 @@ from elyon_api.services.media_processing import process_media
 from elyon_api.services.storage import LocalStorage
 from fastapi.testclient import TestClient
 
-from elyon_agent.client import AgentError, ElyonClient
+from elyon_agent.client import AgentError
 from elyon_agent.commands import make_dispatcher
 from elyon_agent.run import agent_loop_once, first_run_wizard, pin_server_key
 from elyon_agent.state import DeviceState
 
 from .conftest import admin_login, approve_device, bootstrap_site, csrf_headers, enroll_device
-
-
-@pytest.fixture()
-def agent(app, api, agent_settings):
-    client = ElyonClient(
-        agent_settings.server_url,
-        timeout=agent_settings.request_timeout_seconds,
-        transport=api._transport,  # noqa: SLF001 — transport de test du TestClient
-    )
-    yield client
-    client.close()
 
 
 def png_bytes() -> bytes:

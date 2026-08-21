@@ -11,6 +11,7 @@ from elyon_agent.client import ElyonClient, Manifest
 from elyon_agent.commands import CommandDispatcher, make_dispatcher
 from elyon_agent.config import AgentSettings
 from elyon_agent.state import DeviceState
+from elyon_agent.sync import SyncError, Synchronizer, storage_free_bytes
 
 InputFn = Callable[[str], str]
 PrintFn = Callable[..., object]
@@ -94,8 +95,9 @@ def agent_loop_once(
     settings: AgentSettings,
     dispatcher: CommandDispatcher,
     on_manifest: ManifestCallback | None = None,
+    synchronizer: Synchronizer | None = None,
 ) -> int:
-    """Une itération du cycle agent : heartbeat, commandes, manifeste.
+    """Une itération du cycle agent : heartbeat, commandes, manifeste, sync.
 
     Retourne l'intervalle (secondes) avant la prochaine itération.
     """
@@ -103,6 +105,7 @@ def agent_loop_once(
         state,
         player_state="idle",
         agent_version=settings.agent_version,
+        storage_free_bytes=storage_free_bytes(settings.data_dir),
     )
     interval = heartbeat.heartbeat_interval_seconds
 
@@ -114,8 +117,14 @@ def agent_loop_once(
         manifest = client.fetch_manifest(state)
         public_key = state.pinned_public_key or pin_server_key(client, state, settings)
         payload = client.verify_manifest(manifest, public_key)
+        if synchronizer is not None:
+            synchronizer.sync(manifest, payload)
         if on_manifest is not None:
             on_manifest(manifest, payload)
+    except SyncError:
+        # Synchronisation en échec (réseau/disque/checksum) : la release courante
+        # reste utilisable — nouvelle tentative à la prochaine itération.
+        pass
     except Exception:  # noqa: BLE001 — pas de manifeste publié : non bloquant
         pass
 
@@ -127,13 +136,18 @@ def run_forever(
     settings: AgentSettings,
     dispatcher: CommandDispatcher | None = None,
     on_manifest: ManifestCallback | None = None,
+    synchronizer: Synchronizer | None = None,
     input_fn: InputFn = input,
     print_fn: PrintFn = print,
     sleep_fn: SleepFn = time.sleep,
 ) -> None:
     """Boucle principale de l'agent avec backoff sur erreurs réseau."""
+    from elyon_agent.sync import MediaStore
+
     state = load_or_enroll(client, settings, input_fn=input_fn, print_fn=print_fn)
     dispatcher = dispatcher or make_dispatcher()
+    if synchronizer is None:
+        synchronizer = Synchronizer(client, MediaStore(settings.data_dir), state)
     pin_server_key(client, state, settings)
 
     consecutive_failures = 0

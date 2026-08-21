@@ -1,15 +1,55 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from elyon_api.config import Settings
-from elyon_api.models import Device, Manifest, Media, MediaStatus, PlaylistItem
+from elyon_api.models import Device, Manifest, Media, MediaKind, MediaStatus, PlaylistItem
 from elyon_api.services.schedule import active_schedules
 from elyon_api.services.signing import load_or_create_signing_key, sign_json
+from elyon_api.services.storage import StorageBackend, build_storage
+
+
+def _file_digest(storage: StorageBackend, path: str) -> tuple[str, int]:
+    """SHA-256 et taille d'un fichier de stockage (pour intégrité côté player)."""
+    digest = hashlib.sha256()
+    size = 0
+    with storage.open_read(path) as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+            size += len(chunk)
+    return digest.hexdigest(), size
+
+
+def _media_entry(media: Media, storage: StorageBackend, settings: Settings) -> dict:
+    base = settings.public_base_url.rstrip("/")
+    entry = {
+        "media_id": media.id,
+        "name": media.name,
+        "kind": media.kind.value,
+        "url": f"{base}/api/media/{media.id}/file",
+        "sha256": media.sha256,
+        "size_bytes": media.size_bytes,
+        "pages": json.loads(media.pages_json) if media.pages_json else None,
+    }
+    if media.kind == MediaKind.PDF and media.pages_json:
+        page_files = []
+        for index, page_path in enumerate(json.loads(media.pages_json)):
+            sha, size = _file_digest(storage, page_path)
+            page_files.append(
+                {
+                    "index": index,
+                    "url": f"{base}/api/media/{media.id}/pages/{index}/file",
+                    "sha256": sha,
+                    "size_bytes": size,
+                }
+            )
+        entry["page_files"] = page_files
+    return entry
 
 
 def build_manifest_payload(
@@ -19,6 +59,7 @@ def build_manifest_payload(
     site = device.site
     blocks = []
     media_by_id: dict[str, Media] = {}
+    storage = build_storage(settings)
     if screen is not None and site is not None:
         for schedule in active_schedules(db, site.id, at):
             items = db.scalars(
@@ -55,18 +96,7 @@ def build_manifest_payload(
         "screen_id": screen.id if screen else None,
         "site_id": site.id if site else None,
         "published_at": at.isoformat(),
-        "media": [
-            {
-                "media_id": m.id,
-                "name": m.name,
-                "kind": m.kind.value,
-                "url": f"{settings.public_base_url.rstrip('/')}/api/media/{m.id}/file",
-                "sha256": m.sha256,
-                "size_bytes": m.size_bytes,
-                "pages": json.loads(m.pages_json) if m.pages_json else None,
-            }
-            for m in media_by_id.values()
-        ],
+        "media": [_media_entry(m, storage, settings) for m in media_by_id.values()],
         "blocks": blocks,
     }
 

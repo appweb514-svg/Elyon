@@ -11,6 +11,7 @@ commandes distantes et récupération des manifestes signés.
 | `state.py`     | État persisté (device_id, token, clé épinglée) — fichier 0600        |
 | `client.py`    | Client HTTP : enrôlement, heartbeat, commandes, manifeste, downloads |
 | `commands.py`  | Dispatch des commandes distantes (reboot, resync, blank, …)         |
+| `sync.py`      | Synchronisation résiliente : blobs, releases, activation, GC         |
 | `run.py`       | Assistant premier démarrage + boucle principale (backoff expo.)      |
 
 ## Flux de l'agent
@@ -34,16 +35,43 @@ commandes distantes et récupération des manifestes signés.
 - `fsync` + renommage atomique : le fichier final n'apparaît que complet ;
 - progression observable via `DownloadTracker`.
 
+## Synchronisation résiliente (lot 8)
+
+`elyon_agent.sync` maintient le contenu local à jour de façon crash-safe :
+
+```
+<root>/blobs/<sha256>               fichiers vérifiés, content-addressés
+<root>/releases/v<version>/         manifeste signé + layout de lecture
+<root>/current -> releases/v<ver>   symlink échangé atomiquement (os.replace)
+```
+
+- **Staging** : téléchargements vers `.part`, activation seulement une fois
+  tous les blobs vérifiés (SHA-256 + taille).
+- **Activation atomique** : symlink `current` échangé par `os.replace` après
+  `fsync` — résiste à la coupure électrique (risque #5 du plan).
+- **Rollback** : `recover()` valide la release courante au redémarrage et
+  retombe sur la précédente release saine si nécessaire.
+- **GC** : blobs non référencés et releases anciennes (garde 2) supprimés
+  après chaque activation réussie.
+- **Disque plein** : pré-vérification `disk_usage` + `ENOSPC` non retirable
+  → `SyncError`, la release courante reste utilisable.
+- **Retries** : 2 reprises par fichier avec backoff exponentiel.
+
+Le manifeste signé embarque désormais `page_files` (URL + SHA-256 + taille de
+chaque page PDF convertie) : chaque fichier téléchargé est vérifiable.
+
 ## Tests
 
 ```bash
 pytest player/agent --rootdir=player/agent
 ```
 
-18 tests exécutés **contre l'API réelle** (app FastAPI via transport de test) :
+29 tests exécutés **contre l'API réelle** (app FastAPI via transport de test) :
 enrôlement (wizard), heartbeat avant/après approbation, cycle commandes
 complet, signature manifeste (valide/falsifiée/clé erronée), épinglage TOFU,
-téléchargements (complet, reprise, checksum invalide, taille invalide).
+téléchargements (complet, reprise, checksum invalide, taille invalide),
+synchronisation (activation, idempotence, coupure réseau, disque plein,
+checksum serveur corrompu, redémarrage hors ligne, rollback, GC).
 
 ## Variables d'environnement
 
