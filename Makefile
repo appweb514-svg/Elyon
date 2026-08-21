@@ -12,7 +12,7 @@ lint: lint-python lint-web ## Lint Python et Web
 
 lint-python: ## Lint Python (ruff + mypy)
 	ruff check apps/api && ruff check player/agent && ruff check player/playback
-	mypy apps/api/elyon_api
+	mypy apps/api/elyon_api --config-file apps/api/pyproject.toml
 	mypy player/agent/elyon_agent --config-file player/agent/pyproject.toml
 	mypy player/playback/elyon_playback --config-file player/playback/pyproject.toml
 
