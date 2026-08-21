@@ -1,0 +1,26 @@
+[Unit]
+Description=Elyon — agent (enrôlement, heartbeat, synchronisation)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=elyon
+Group=elyon
+EnvironmentFile=/etc/default/elyon-agent
+Environment=ELYON_AGENT_DATA_DIR=/var/lib/elyon-player
+Environment=ELYON_AGENT_STATE_FILE=/var/lib/elyon-player/state.json
+ExecStart=/opt/elyon-player/venv/bin/elyon-agent
+Restart=always
+RestartSec=10
+# Durcissement
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/elyon-player
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

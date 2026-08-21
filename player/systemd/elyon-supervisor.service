@@ -1,0 +1,23 @@
+[Unit]
+Description=Elyon — superviseur du moteur de lecture (mpv, watchdog)
+After=elyon-agent.service
+Requires=elyon-agent.service
+
+[Service]
+Type=simple
+User=elyon
+Group=elyon
+EnvironmentFile=/etc/default/elyon-agent
+Environment=ELYON_AGENT_DATA_DIR=/var/lib/elyon-player
+Environment=ELYON_AGENT_STATE_FILE=/var/lib/elyon-player/state.json
+ExecStart=/opt/elyon-player/venv/bin/python -m elyon_playback.supervisor /var/lib/elyon-player
+Restart=always
+RestartSec=5
+# Le moteur a besoin de l'écran : pas de PrivateDevices ni ProtectHome strict
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/elyon-player
+
+[Install]
+WantedBy=graphical.target

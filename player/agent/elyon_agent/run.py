@@ -164,11 +164,33 @@ def run_forever(
         sleep_fn(interval)
 
 
+def enroll_once(
+    client: ElyonClient,
+    settings: AgentSettings,
+    input_fn: InputFn = input,
+    print_fn: PrintFn = print,
+) -> DeviceState:
+    """Mode --enroll-once : assistant d'enrôlement interactif puis sortie.
+
+    Utilisé par player/setup/setup-wizard.sh — les services systemd prennent
+    le relais une fois le state.json écrit.
+    """
+    state = load_or_enroll(client, settings, input_fn=input_fn, print_fn=print_fn)
+    print_fn(f"[agent] enrôlement OK (device {state.device_id})")
+    print_fn("[agent] si le device est en attente, approuvez-le dans le back-office")
+    return state
+
+
 def main() -> None:
+    import sys
+
     settings = AgentSettings()
     with ElyonClient(
         settings.server_url, timeout=settings.request_timeout_seconds
     ) as client:
+        if "--enroll-once" in sys.argv[1:]:
+            enroll_once(client, settings)
+            return
         run_forever(client, settings, dispatcher=make_dispatcher())
 
 
