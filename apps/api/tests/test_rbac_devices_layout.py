@@ -145,7 +145,17 @@ def test_rbac_granular_viewer_cannot_mutate(client: TestClient):
     # VIEWER cannot publish / create playlist / upload
     for method, path, body in [
         ("POST", "/api/playlists", {"name": "PL"}),
-        ("POST", "/api/schedules", {"site_id": site["id"], "playlist_id": "000", "name": "S", "start_at": "2026-01-01T00:00:00Z", "end_at": "2027-01-01T00:00:00Z"}),
+        (
+            "POST",
+            "/api/schedules",
+            {
+                "site_id": site["id"],
+                "playlist_id": "000",
+                "name": "S",
+                "start_at": "2026-01-01T00:00:00Z",
+                "end_at": "2027-01-01T00:00:00Z",
+            },
+        ),
     ]:
         resp = auth_json(client, method, path, json=body)
         assert resp.status_code == 403, f"viewer {method} {path}: {resp.text}"
@@ -168,10 +178,12 @@ def test_publish_is_audited(client: TestClient, db_session_factory):
         json={"serial": "SER-AUDIT-1", "name": "DevAudit", "site_code": tok["code"]},
     ).json()
     auth_json(client, "POST", f"/api/devices/{dev['device_id']}/approve")
-    screen = auth_json(
-        client, "POST", f"/api/sites/{site['id']}/screens",
+    auth_json(
+        client,
+        "POST",
+        f"/api/sites/{site['id']}/screens",
         json={"name": "EcranAudit", "device_id": dev["device_id"]},
-    ).json()
+    )
     # Publish doit créer un audit log
     resp = auth_json(client, "POST", f"/api/devices/{dev['device_id']}/publish")
     assert resp.status_code in (200, 201), resp.text

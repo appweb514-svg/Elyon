@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -56,6 +56,14 @@ export function LayoutEditor({
   const [mode, setMode] = useState(value?.mode ?? "fullscreen");
   const [zones, setZones] = useState<LayoutZone[]>(value?.zones ?? defaultZones("fullscreen"));
 
+  useEffect(() => {
+    if (value) {
+      setMode(value.mode);
+      setZones(value.zones);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- sync externe value → état local uniquement à l'arrivée d'une nouvelle valeur
+  }, [value?.mode, value?.zones]);
+
   function applyMode(newMode: string) {
     setMode(newMode);
     const nz = defaultZones(newMode);
@@ -94,7 +102,7 @@ export function LayoutEditor({
     <div className="space-y-4">
       <div className="space-y-2">
         <Label>Mode de disposition</Label>
-        <Select value={mode} onChange={(e) => applyMode(e.target.value)}>
+        <Select data-testid="mode-select" value={mode} onChange={(e) => applyMode(e.target.value)}>
           {MODES.map((m) => (
             <option key={m.value} value={m.value}>
               {m.label}
@@ -138,6 +146,7 @@ export function LayoutEditor({
               <div key={k} className="space-y-1">
                 <Label className="text-xs">{k.toUpperCase()} %</Label>
                 <Input
+                  data-testid={`zone-${idx}-${k}`}
                   type="number"
                   min={0}
                   max={100}
@@ -180,7 +189,7 @@ export function LayoutEditor({
         </div>
       ))}
 
-      <Button variant="outline" size="sm" onClick={addZone}>
+      <Button data-testid="add-zone" variant="outline" size="sm" onClick={addZone}>
         Ajouter une zone
       </Button>
     </div>
