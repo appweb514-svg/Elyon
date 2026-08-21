@@ -22,6 +22,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { hasPermission } from "@/lib/permissions";
 
 type User = {
   id: string;
@@ -30,16 +31,34 @@ type User = {
   role: string;
   is_active: boolean;
   org_id: string | null;
+  site_id: string | null;
   created_at: string;
 };
 
 type Organization = { id: string; name: string; slug: string; quota_bytes: number };
+type Site = { id: string; name: string };
 
-type Me = { id: string; role: string };
+type Me = { id: string; role: string; org_id: string | null; site_id: string | null };
+
+const ROLE_LABEL: Record<string, string> = {
+  superadmin: "super-admin",
+  org_admin: "admin IT",
+  site_manager: "responsable de site",
+  operator: "contributeur",
+  viewer: "lecteur",
+};
+
+const ROLE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "viewer", label: "lecteur (viewer)" },
+  { value: "operator", label: "contributeur (operator)" },
+  { value: "site_manager", label: "responsable de site (site_manager)" },
+  { value: "org_admin", label: "admin IT (org_admin)" },
+];
 
 export default function UsersPage() {
   const [users, setUsers] = useState<User[]>([]);
   const [orgs, setOrgs] = useState<Organization[]>([]);
+  const [sites, setSites] = useState<Site[]>([]);
   const [me, setMe] = useState<Me | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -48,6 +67,7 @@ export default function UsersPage() {
   const [password, setPassword] = useState("");
   const [role, setRole] = useState("viewer");
   const [orgId, setOrgId] = useState("");
+  const [siteId, setSiteId] = useState("");
 
   const reload = useCallback(async () => {
     try {
@@ -60,6 +80,10 @@ export default function UsersPage() {
       if (meData.role === "superadmin") {
         const orgList = await api.get<Organization[]>("/api/organizations");
         setOrgs(orgList);
+      }
+      if (meData.role === "superadmin" || meData.role === "org_admin") {
+        const siteList = await api.get<Site[]>("/api/sites").catch(() => [] as Site[]);
+        setSites(siteList as Site[]);
       }
       setError(null);
     } catch (err) {
@@ -83,10 +107,12 @@ export default function UsersPage() {
         password,
         role,
         org_id: orgId || null,
+        site_id: siteId || null,
       });
       setEmail("");
       setFullName("");
       setPassword("");
+      setSiteId("");
       await reload();
     } catch (err) {
       setError(String((err as Error).message ?? err));
@@ -102,77 +128,110 @@ export default function UsersPage() {
     }
   }
 
+  async function deleteUser(user: User) {
+    if (!window.confirm(`Supprimer ${user.full_name} (${user.email}) ?`)) return;
+    try {
+      await api.del(`/api/users/${user.id}`);
+      await reload();
+    } catch (err) {
+      setError(String((err as Error).message ?? err));
+    }
+  }
+
   const orgNames = Object.fromEntries(orgs.map((o) => [o.id, o.name]));
+  const siteNames = Object.fromEntries(sites.map((s) => [s.id, s.name]));
   const isSuperadmin = me?.role === "superadmin";
+  const canCreate = me ? hasPermission(me.role as never, "user.create" as never) : false;
+  const canEdit = me ? hasPermission(me.role as never, "user.edit" as never) : false;
+  const canDelete = me ? hasPermission(me.role as never, "user.delete" as never) : false;
+  const showSiteSelect = role === "site_manager" || role === "operator" || role === "viewer";
+  const filteredSites = orgId ? sites.filter((s) => s.id && (orgs.find((o) => o.id === orgId) ? true : true)) : sites;
 
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-bold">Utilisateurs</h1>
-      {error && <p className="text-sm text-destructive">{error}</p>}
+      {error && <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>}
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Nouvel utilisateur</CardTitle>
-          <CardDescription>
-            Rôles : viewer (lecture), manager (contenu), org_admin (admin
-            organisation), superadmin (tout, hors organisation).
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="grid gap-4 md:grid-cols-6 md:items-end">
-          <div className="space-y-2 md:col-span-2">
-            <Label htmlFor="u-email">E-mail</Label>
-            <Input
-              id="u-email"
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
-          </div>
-          <div className="space-y-2 md:col-span-2">
-            <Label htmlFor="u-name">Nom complet</Label>
-            <Input
-              id="u-name"
-              value={fullName}
-              onChange={(e) => setFullName(e.target.value)}
-            />
-          </div>
-          <div className="space-y-2 md:col-span-2">
-            <Label htmlFor="u-password">Mot de passe</Label>
-            <Input
-              id="u-password"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              minLength={12}
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="u-role">Rôle</Label>
-            <Select id="u-role" value={role} onChange={(e) => setRole(e.target.value)}>
-              <option value="viewer">viewer</option>
-              <option value="manager">manager</option>
-              <option value="org_admin">org_admin</option>
-              {isSuperadmin && <option value="superadmin">superadmin</option>}
-            </Select>
-          </div>
-          {isSuperadmin && (
+      {canCreate && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Nouvel utilisateur</CardTitle>
+            <CardDescription>
+              Rôles : lecteur, contributeur, responsable de site, admin IT, super-admin.
+              Les responsables/contributeurs/lecteurs peuvent être rattachés à un site précis.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-4 md:grid-cols-6 md:items-end">
             <div className="space-y-2 md:col-span-2">
-              <Label htmlFor="u-org">Organisation</Label>
-              <Select id="u-org" value={orgId} onChange={(e) => setOrgId(e.target.value)}>
-                <option value="">— Aucune (superadmin) —</option>
-                {orgs.map((org) => (
-                  <option key={org.id} value={org.id}>
-                    {org.name}
+              <Label htmlFor="u-email">E-mail</Label>
+              <Input
+                id="u-email"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2 md:col-span-2">
+              <Label htmlFor="u-name">Nom complet</Label>
+              <Input
+                id="u-name"
+                value={fullName}
+                onChange={(e) => setFullName(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2 md:col-span-2">
+              <Label htmlFor="u-password">Mot de passe</Label>
+              <Input
+                id="u-password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                minLength={12}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="u-role">Rôle</Label>
+              <Select id="u-role" value={role} onChange={(e) => setRole(e.target.value)}>
+                {ROLE_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
                   </option>
                 ))}
+                {isSuperadmin && <option value="superadmin">super-admin</option>}
               </Select>
             </div>
-          )}
-          <Button onClick={create} className="md:col-span-2">
-            Créer
-          </Button>
-        </CardContent>
-      </Card>
+            {isSuperadmin && (
+              <div className="space-y-2 md:col-span-2">
+                <Label htmlFor="u-org">Organisation</Label>
+                <Select id="u-org" value={orgId} onChange={(e) => setOrgId(e.target.value)}>
+                  <option value="">— Aucune (superadmin) —</option>
+                  {orgs.map((org) => (
+                    <option key={org.id} value={org.id}>
+                      {org.name}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+            )}
+            {showSiteSelect && sites.length > 0 && (
+              <div className="space-y-2 md:col-span-2">
+                <Label htmlFor="u-site">Site (optionnel)</Label>
+                <Select id="u-site" value={siteId} onChange={(e) => setSiteId(e.target.value)}>
+                  <option value="">— Aucun (toute l&apos;org) —</option>
+                  {filteredSites.map((site) => (
+                    <option key={site.id} value={site.id}>
+                      {site.name}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+            )}
+            <Button onClick={create} className="md:col-span-2">
+              Créer
+            </Button>
+          </CardContent>
+        </Card>
+      )}
 
       {isSuperadmin && orgs.length > 0 && (
         <Card>
@@ -204,7 +263,7 @@ export default function UsersPage() {
               <TableRow>
                 <TableHead>Utilisateur</TableHead>
                 <TableHead>Rôle</TableHead>
-                <TableHead>Organisation</TableHead>
+                <TableHead>Organisation / Site</TableHead>
                 <TableHead>Créé le</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
@@ -218,20 +277,32 @@ export default function UsersPage() {
                   </TableCell>
                   <TableCell>
                     <Badge variant={user.role === "superadmin" ? "default" : "secondary"}>
-                      {user.role}
+                      {ROLE_LABEL[user.role] ?? user.role}
                     </Badge>
                     {!user.is_active && <Badge variant="destructive">inactif</Badge>}
                   </TableCell>
-                  <TableCell>{user.org_id ? (orgNames[user.org_id] ?? user.org_id) : "—"}</TableCell>
+                  <TableCell className="text-xs">
+                    <div>{user.org_id ? (orgNames[user.org_id] ?? user.org_id) : "—"}</div>
+                    {user.site_id && (
+                      <div className="text-muted-foreground">
+                        Site : {siteNames[user.site_id] ?? user.site_id}
+                      </div>
+                    )}
+                  </TableCell>
                   <TableCell>{formatDate(user.created_at)}</TableCell>
-                  <TableCell className="space-x-2 text-right">
-                    {user.id !== me?.id && (
+                  <TableCell className="space-x-1 text-right">
+                    {canEdit && user.id !== me?.id && (
                       <Button
                         size="sm"
                         variant="outline"
                         onClick={() => patchUser(user, { is_active: !user.is_active })}
                       >
                         {user.is_active ? "Désactiver" : "Réactiver"}
+                      </Button>
+                    )}
+                    {canDelete && user.id !== me?.id && (
+                      <Button size="sm" variant="destructive" onClick={() => deleteUser(user)}>
+                        Supprimer
                       </Button>
                     )}
                   </TableCell>

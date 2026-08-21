@@ -10,6 +10,7 @@ from elyon_api.db import get_db
 from elyon_api.deps import (
     audit,
     get_device_from_request,
+    require_permission,
     require_roles,
     require_site_access,
 )
@@ -25,6 +26,7 @@ from elyon_api.models import (
     User,
     ensure_utc,
 )
+from elyon_api.permissions import Permission
 from elyon_api.schemas import (
     CommandAck,
     CommandIn,
@@ -127,7 +129,7 @@ def issue_command(
     device_id: str,
     body: CommandIn,
     request: Request,
-    user: User = Depends(require_roles(Role.SUPERADMIN, Role.ORG_ADMIN, Role.SITE_MANAGER)),
+    user: User = Depends(require_permission(Permission.DEVICE_COMMAND)),
     db: Session = Depends(get_db),
 ) -> CommandOut:
     device = db.get(Device, device_id)
@@ -173,14 +175,98 @@ def ack_command(
 
 
 def _device_status(device: Device, now: dt.datetime, grace: int) -> str:
-    if device.status != DeviceStatus.APPROVED:
-        return device.status.value
-    if device.last_seen_at is None:
-        return "offline"
-    last = ensure_utc(device.last_seen_at)
-    if (now - last).total_seconds() > grace:
-        return "offline"
-    return "online"
+    from elyon_api.deps import compute_device_status
+
+    return compute_device_status(device, now, grace)
+
+
+@router.get("/admin/devices/{device_id}/status")
+def admin_device_status(
+    device_id: str,
+    request: Request,
+    user: User = Depends(admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    device = db.get(Device, device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail="Device introuvable")
+    require_site_access(db, user, device.org_id)
+    settings = request.app.state.settings
+    now = dt.datetime.now(dt.UTC)
+    # Manifest version (latest)
+    from sqlalchemy import func as _func
+
+    from elyon_api.models import Manifest as _Manifest
+    version = db.scalar(
+        select(_func.max(_Manifest.version)).where(_Manifest.device_id == device.id)
+    )
+    computed = _device_status(device, now, settings.offline_grace_seconds)
+    return {
+        "device_id": device.id,
+        "status": device.status.value,
+        "computed_status": computed,
+        "last_seen_at": device.last_seen_at.isoformat() if device.last_seen_at else None,
+        "screen_id": device.screen.id if device.screen else None,
+        "manifest_version": version,
+    }
+
+
+@router.get("/admin/devices/{device_id}/commands")
+def admin_list_commands(
+    device_id: str,
+    user: User = Depends(admin),
+    db: Session = Depends(get_db),
+) -> list[CommandOut]:
+    device = db.get(Device, device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail="Device introuvable")
+    require_site_access(db, user, device.org_id)
+    commands = db.scalars(
+        select(Command)
+        .where(Command.device_id == device_id)
+        .order_by(Command.created_at.desc())
+        .limit(100)
+    ).all()
+    return [CommandOut.model_validate(c) for c in commands]
+
+
+@router.get("/admin/devices/{device_id}/heartbeat")
+def admin_heartbeat(
+    device_id: str,
+    user: User = Depends(admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    device = db.get(Device, device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail="Device introuvable")
+    require_site_access(db, user, device.org_id)
+    return {
+        "status": "ok",
+        "last_seen_at": device.last_seen_at.isoformat() if device.last_seen_at else None,
+        "device_status": device.status.value,
+    }
+
+
+@router.get("/admin/devices/{device_id}/manifest")
+def admin_manifest_preview(
+    device_id: str,
+    user: User = Depends(admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    device = db.get(Device, device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail="Device introuvable")
+    require_site_access(db, user, device.org_id)
+    from elyon_api.services.manifest import latest_manifest
+    manifest = latest_manifest(db, device_id)
+    if manifest is None:
+        raise HTTPException(status_code=404, detail="Aucun manifeste publié")
+    return {
+        "version": manifest.version,
+        "payload": manifest.payload,
+        "signature": manifest.signature,
+        "published_at": manifest.published_at.isoformat(),
+    }
 
 
 @router.get("/dashboard")

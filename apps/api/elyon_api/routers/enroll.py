@@ -8,7 +8,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from elyon_api.db import get_db
-from elyon_api.deps import audit, get_device_from_request, require_roles, require_site_access
+from elyon_api.deps import (
+    audit,
+    get_device_from_request,
+    require_permission,
+    require_roles,
+    require_site_access,
+)
 from elyon_api.models import (
     Device,
     DeviceStatus,
@@ -19,6 +25,7 @@ from elyon_api.models import (
     Site,
     User,
 )
+from elyon_api.permissions import Permission
 from elyon_api.schemas import (
     DeviceOut,
     DevicePatch,
@@ -109,6 +116,11 @@ def list_devices(
     user: User = Depends(admin),
     db: Session = Depends(get_db),
 ) -> list[DeviceOut]:
+    import datetime as _dt
+
+    from elyon_api.deps import compute_device_status
+
+    now = _dt.datetime.now(_dt.UTC)
     stmt = select(Device).order_by(Device.created_at.desc())
     if user.role != Role.SUPERADMIN:
         stmt = stmt.where(Device.org_id == user.org_id)
@@ -121,6 +133,10 @@ def list_devices(
     for device in devices:
         out = DeviceOut.model_validate(device)
         out.screen_id = device.screen.id if device.screen else None
+        try:
+            out.computed_status = compute_device_status(device, now, 90)
+        except Exception:
+            out.computed_status = device.status.value
         result.append(out)
     return result
 
@@ -129,12 +145,22 @@ def list_devices(
 def get_device(
     device_id: str, user: User = Depends(admin), db: Session = Depends(get_db)
 ) -> DeviceOut:
+    import datetime as _dt
+
+    from elyon_api.deps import compute_device_status
+
     device = db.get(Device, device_id)
     if device is None:
         raise HTTPException(status_code=404, detail="Device introuvable")
     require_site_access(db, user, device.org_id)
     out = DeviceOut.model_validate(device)
     out.screen_id = device.screen.id if device.screen else None
+    try:
+        out.computed_status = compute_device_status(
+            device, _dt.datetime.now(_dt.UTC), 90
+        )
+    except Exception:
+        out.computed_status = device.status.value
     return out
 
 
@@ -165,13 +191,16 @@ def patch_device(
 
 @router.post("/devices/{device_id}/approve")
 def approve_device(
-    device_id: str, user: User = Depends(admin), db: Session = Depends(get_db)
+    device_id: str, user: User = Depends(require_permission(Permission.DEVICE_APPROVE)),  # noqa: E501
+    db: Session = Depends(get_db)
 ) -> DeviceOut:
     device = db.get(Device, device_id)
     if device is None:
         raise HTTPException(status_code=404, detail="Device introuvable")
     require_site_access(db, user, device.org_id)
-    if device.status != DeviceStatus.PENDING:
+    if device.status not in (
+        DeviceStatus.PENDING, DeviceStatus.DISABLED, DeviceStatus.MAINTENANCE
+    ):
         raise HTTPException(status_code=409, detail="Device non en attente")
     device.status = DeviceStatus.APPROVED
     db.commit()
@@ -187,7 +216,8 @@ def approve_device(
 
 @router.post("/devices/{device_id}/block")
 def block_device(
-    device_id: str, user: User = Depends(admin), db: Session = Depends(get_db)
+    device_id: str, user: User = Depends(require_permission(Permission.DEVICE_DISABLE)),  # noqa: E501
+    db: Session = Depends(get_db)
 ) -> DeviceOut:
     device = db.get(Device, device_id)
     if device is None:
@@ -208,9 +238,76 @@ def block_device(
     return out
 
 
+@router.post("/devices/{device_id}/disable")
+def disable_device(
+    device_id: str, user: User = Depends(require_permission(Permission.DEVICE_DISABLE)),  # noqa: E501
+    db: Session = Depends(get_db)
+) -> DeviceOut:
+    device = db.get(Device, device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail="Device introuvable")
+    require_site_access(db, user, device.org_id)
+    if device.status == DeviceStatus.BLOCKED:
+        raise HTTPException(status_code=409, detail="Device bloqué — réapprouver d'abord")
+    device.status = DeviceStatus.DISABLED
+    db.commit()
+    db.refresh(device)
+    audit(db, "device.disable", "device", device.id, user=user)
+    _event(
+        db, device.org_id, device.site_id, device.id,
+        "device_disabled", EventLevel.WARNING, f"Player {device.name} désactivé"
+    )
+    db.commit()
+    out = DeviceOut.model_validate(device)
+    out.screen_id = device.screen.id if device.screen else None
+    return out
+
+
+@router.post("/devices/{device_id}/maintenance")
+def maintenance_device(
+    device_id: str, user: User = Depends(require_permission(Permission.DEVICE_DISABLE)),  # noqa: E501
+    db: Session = Depends(get_db)
+) -> DeviceOut:
+    device = db.get(Device, device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail="Device introuvable")
+    require_site_access(db, user, device.org_id)
+    device.status = DeviceStatus.MAINTENANCE
+    db.commit()
+    db.refresh(device)
+    audit(db, "device.maintenance", "device", device.id, user=user)
+    db.commit()
+    out = DeviceOut.model_validate(device)
+    out.screen_id = device.screen.id if device.screen else None
+    return out
+
+
+@router.post("/devices/{device_id}/enable")
+def enable_device(
+    device_id: str, user: User = Depends(require_permission(Permission.DEVICE_APPROVE)),  # noqa: E501
+    db: Session = Depends(get_db)
+) -> DeviceOut:
+    device = db.get(Device, device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail="Device introuvable")
+    require_site_access(db, user, device.org_id)
+    if device.status not in (DeviceStatus.DISABLED, DeviceStatus.MAINTENANCE):
+        raise HTTPException(status_code=409, detail="Device non désactivé")
+    device.status = DeviceStatus.APPROVED
+    db.commit()
+    db.refresh(device)
+    audit(db, "device.enable", "device", device.id, user=user)
+    db.commit()
+    out = DeviceOut.model_validate(device)
+    out.screen_id = device.screen.id if device.screen else None
+    return out
+
+
 @router.post("/devices/{device_id}/rotate-token")
 def rotate_token(
-    device_id: str, user: User = Depends(admin), db: Session = Depends(get_db)
+    device_id: str,
+    user: User = Depends(require_permission(Permission.DEVICE_UPDATE)),  # noqa: E501
+    db: Session = Depends(get_db)
 ) -> dict:
     device = db.get(Device, device_id)
     if device is None:

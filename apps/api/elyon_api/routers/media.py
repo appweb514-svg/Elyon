@@ -13,16 +13,15 @@ from elyon_api.db import get_db
 from elyon_api.deps import (
     audit,
     get_device_from_request,
-    require_roles,
+    require_permission,
     require_same_org,
 )
 from elyon_api.models import Device, Media, MediaKind, MediaStatus, Role, User
+from elyon_api.permissions import Permission
 from elyon_api.schemas import MediaOut
 from elyon_api.services.storage import build_storage, safe_storage_path
 
 router = APIRouter(prefix="/api/media", tags=["media"])
-
-admin = require_roles(Role.SUPERADMIN, Role.ORG_ADMIN, Role.SITE_MANAGER, Role.OPERATOR)
 
 _EXT_KIND = {
     ".mp4": MediaKind.VIDEO,
@@ -56,7 +55,7 @@ def upload_media(
     request: Request,
     file: UploadFile,
     name: str | None = None,
-    user: User = Depends(admin),
+    user: User = Depends(require_permission(Permission.MEDIA_UPLOAD)),
     db: Session = Depends(get_db),
 ) -> MediaOut:
     settings = request.app.state.settings
@@ -122,7 +121,7 @@ def upload_media(
 def list_media(
     kind: MediaKind | None = None,
     status: MediaStatus | None = None,
-    user: User = Depends(admin),
+    user: User = Depends(require_permission(Permission.MEDIA_VIEW)),
     db: Session = Depends(get_db),
 ) -> list[MediaOut]:
     stmt = select(Media).order_by(Media.created_at.desc())
@@ -145,7 +144,9 @@ def _get_media(db: Session, user: User, media_id: str) -> Media:
 
 @router.get("/{media_id}")
 def get_media(
-    media_id: str, user: User = Depends(admin), db: Session = Depends(get_db)
+    media_id: str,
+    user: User = Depends(require_permission(Permission.MEDIA_VIEW)),
+    db: Session = Depends(get_db),
 ) -> MediaOut:
     return MediaOut.model_validate(_get_media(db, user, media_id))
 
@@ -219,7 +220,7 @@ def _serve_file(storage, rel_path: str, mime_type: str, size: int, request: Requ
 def delete_media(
     media_id: str,
     request: Request,
-    user: User = Depends(admin),
+    user: User = Depends(require_permission(Permission.MEDIA_DELETE)),
     db: Session = Depends(get_db),
 ) -> None:
     media = _get_media(db, user, media_id)

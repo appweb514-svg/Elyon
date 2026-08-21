@@ -5,7 +5,13 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from elyon_api.db import get_db
-from elyon_api.deps import audit, require_roles, require_same_org, require_site_access
+from elyon_api.deps import (
+    audit,
+    require_permission,
+    require_roles,
+    require_same_org,
+    require_site_access,
+)
 from elyon_api.models import (
     Event,
     EventLevel,
@@ -17,6 +23,7 @@ from elyon_api.models import (
     Site,
     User,
 )
+from elyon_api.permissions import Permission
 from elyon_api.schemas import (
     PlaylistCreate,
     PlaylistDetailOut,
@@ -36,7 +43,10 @@ manager = require_roles(Role.SUPERADMIN, Role.ORG_ADMIN, Role.SITE_MANAGER)
 
 
 @router.get("/playlists")
-def list_playlists(user: User = Depends(admin), db: Session = Depends(get_db)) -> list[PlaylistOut]:
+def list_playlists(
+    user: User = Depends(require_permission(Permission.PLAYLIST_VIEW)),  # noqa: E501
+    db: Session = Depends(get_db),
+) -> list[PlaylistOut]:
     stmt = select(Playlist).order_by(Playlist.name)
     if user.role != Role.SUPERADMIN:
         stmt = stmt.where(Playlist.org_id == user.org_id)
@@ -54,7 +64,7 @@ def _get_playlist(db: Session, user: User, playlist_id: str) -> Playlist:
 @router.post("/playlists", status_code=201)
 def create_playlist(
     body: PlaylistCreate,
-    user: User = Depends(manager),
+    user: User = Depends(require_permission(Permission.PLAYLIST_CREATE)),  # noqa: E501
     db: Session = Depends(get_db),
 ) -> PlaylistOut:
     if user.role == Role.SUPERADMIN:
@@ -74,7 +84,9 @@ def create_playlist(
 
 @router.get("/playlists/{playlist_id}")
 def get_playlist(
-    playlist_id: str, user: User = Depends(admin), db: Session = Depends(get_db)
+    playlist_id: str,
+    user: User = Depends(require_permission(Permission.PLAYLIST_VIEW)),  # noqa: E501
+    db: Session = Depends(get_db)
 ) -> PlaylistDetailOut:
     playlist = _get_playlist(db, user, playlist_id)
     out = PlaylistDetailOut.model_validate(playlist)
@@ -84,7 +96,9 @@ def get_playlist(
 
 @router.delete("/playlists/{playlist_id}", status_code=204)
 def delete_playlist(
-    playlist_id: str, user: User = Depends(manager), db: Session = Depends(get_db)
+    playlist_id: str,
+    user: User = Depends(require_permission(Permission.PLAYLIST_DELETE)),  # noqa: E501
+    db: Session = Depends(get_db)
 ) -> None:
     playlist = _get_playlist(db, user, playlist_id)
     db.delete(playlist)
@@ -97,7 +111,7 @@ def delete_playlist(
 def add_item(
     playlist_id: str,
     body: PlaylistItemIn,
-    user: User = Depends(manager),
+    user: User = Depends(require_permission(Permission.PLAYLIST_EDIT)),  # noqa: E501
     db: Session = Depends(get_db),
 ) -> PlaylistDetailOut:
     playlist = _get_playlist(db, user, playlist_id)
@@ -144,7 +158,7 @@ def remove_item(
 def reorder_items(
     playlist_id: str,
     item_ids: list[str],
-    user: User = Depends(manager),
+    user: User = Depends(require_permission(Permission.PLAYLIST_EDIT)),  # noqa: E501
     db: Session = Depends(get_db),
 ) -> PlaylistDetailOut:
     playlist = _get_playlist(db, user, playlist_id)
@@ -171,7 +185,7 @@ def _get_site(db: Session, user: User, site_id: str) -> Site:
 @router.get("/schedules")
 def list_schedules(
     site_id: str | None = None,
-    user: User = Depends(admin),
+    user: User = Depends(require_permission(Permission.SCHEDULE_VIEW)),  # noqa: E501
     db: Session = Depends(get_db),
 ) -> list[ScheduleOut]:
     stmt = select(Schedule).order_by(Schedule.start_at.desc())
@@ -185,7 +199,7 @@ def list_schedules(
 @router.post("/schedules", status_code=201)
 def create_schedule(
     body: ScheduleCreate,
-    user: User = Depends(manager),
+    user: User = Depends(require_permission(Permission.SCHEDULE_CREATE)),  # noqa: E501
     db: Session = Depends(get_db),
 ) -> ScheduleOut:
     if body.end_at <= body.start_at:
@@ -240,7 +254,7 @@ def _get_schedule(db: Session, user: User, schedule_id: str) -> Schedule:
 def patch_schedule(
     schedule_id: str,
     body: SchedulePatch,
-    user: User = Depends(manager),
+    user: User = Depends(require_permission(Permission.SCHEDULE_EDIT)),  # noqa: E501
     db: Session = Depends(get_db),
 ) -> ScheduleOut:
     schedule = _get_schedule(db, user, schedule_id)
@@ -264,7 +278,9 @@ def patch_schedule(
 
 @router.delete("/schedules/{schedule_id}", status_code=204)
 def delete_schedule(
-    schedule_id: str, user: User = Depends(manager), db: Session = Depends(get_db)
+    schedule_id: str,
+    user: User = Depends(require_permission(Permission.SCHEDULE_DELETE)),  # noqa: E501
+    db: Session = Depends(get_db)
 ) -> None:
     schedule = _get_schedule(db, user, schedule_id)
     db.delete(schedule)

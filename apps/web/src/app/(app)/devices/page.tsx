@@ -36,6 +36,7 @@ type Device = {
   name: string;
   serial: string;
   status: string;
+  computed_status?: string | null;
   site_id: string | null;
   screen_id: string | null;
   last_seen_at: string | null;
@@ -47,11 +48,28 @@ type EnrollToken = { id: string; site_id: string; code: string; expires_at: stri
 
 type SiteName = Record<string, string>;
 
+const STATUS_LABEL: Record<string, string> = {
+  pending: "en attente",
+  approved: "approuvé",
+  online: "en ligne",
+  offline: "hors ligne",
+  syncing: "synchronisation",
+  maintenance: "maintenance",
+  disabled: "désactivé",
+  blocked: "bloqué",
+};
+
 function statusVariant(status: string): "success" | "warning" | "destructive" | "secondary" {
-  if (status === "approved") return "success";
-  if (status === "pending") return "warning";
-  if (status === "blocked" || status === "rejected") return "destructive";
+  if (status === "online" || status === "approved") return "success";
+  if (status === "pending" || status === "syncing") return "warning";
+  if (status === "blocked" || status === "disabled") return "destructive";
+  if (status === "maintenance") return "secondary";
+  if (status === "offline") return "secondary";
   return "secondary";
+}
+
+function displayStatus(d: Device): string {
+  return d.computed_status ?? d.status;
 }
 
 export default function DevicesPage() {
@@ -80,6 +98,7 @@ export default function DevicesPage() {
         names[site.id] = site.name;
       }
       setSiteNames(names);
+      setError(null);
     } catch (err) {
       setError(String((err as Error).message ?? err));
     }
@@ -97,14 +116,19 @@ export default function DevicesPage() {
       );
       setNewCode(token.code);
       setTokens((prev) => [...prev, token]);
+      setError(null);
     } catch (err) {
       setError(String((err as Error).message ?? err));
     }
   }
 
-  async function act(device: Device, action: "approve" | "block") {
+  async function act(device: Device, action: "approve" | "block" | "disable" | "enable" | "maintenance") {
     try {
-      await api.post(`/api/devices/${device.id}/${action}`);
+      const path =
+        action === "maintenance"
+          ? `/api/devices/${device.id}/maintenance`
+          : `/api/devices/${device.id}/${action}`;
+      await api.post(path);
       await reload();
     } catch (err) {
       setError(String((err as Error).message ?? err));
@@ -123,6 +147,15 @@ export default function DevicesPage() {
     }
   }
 
+  async function sendCommand(device: Device, type: string) {
+    try {
+      await api.post(`/api/devices/${device.id}/commands`, { type });
+      setError(null);
+    } catch (err) {
+      setError(String((err as Error).message ?? err));
+    }
+  }
+
   const pending = devices.filter((d) => d.status === "pending");
 
   return (
@@ -131,7 +164,7 @@ export default function DevicesPage() {
         <h1 className="text-2xl font-bold">Appareils</h1>
         <Button onClick={() => setDialogOpen(true)}>Générer un jeton d&apos;enrôlement</Button>
       </div>
-      {error && <p className="text-sm text-destructive">{error}</p>}
+      {error && <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>}
 
       {pending.length > 0 && (
         <Card>
@@ -201,6 +234,9 @@ export default function DevicesPage() {
       <Card>
         <CardHeader>
           <CardTitle>Tous les appareils</CardTitle>
+          <CardDescription>
+            Statuts : en attente, approuvé, en ligne, hors ligne, synchronisation, maintenance, désactivé, bloqué.
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <Table>
@@ -213,32 +249,56 @@ export default function DevicesPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {devices.map((device) => (
-                <TableRow key={device.id}>
-                  <TableCell>
-                    <Link href={`/devices/${device.id}`} className="font-medium hover:underline">
-                      {device.name}
-                    </Link>
-                    <div className="text-xs text-muted-foreground">{device.serial}</div>
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant={statusVariant(device.status)}>{device.status}</Badge>
-                  </TableCell>
-                  <TableCell>{formatDate(device.last_seen_at)}</TableCell>
-                  <TableCell className="space-x-2 text-right">
-                    {device.status === "approved" && (
-                      <Button size="sm" variant="outline" onClick={() => rotate(device)}>
-                        Régénérer le token
+              {devices.map((device) => {
+                const shown = displayStatus(device);
+                return (
+                  <TableRow key={device.id}>
+                    <TableCell>
+                      <Link href={`/devices/${device.id}`} className="font-medium hover:underline">
+                        {device.name}
+                      </Link>
+                      <div className="text-xs text-muted-foreground">{device.serial}</div>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={statusVariant(shown)}>{STATUS_LABEL[shown] ?? shown}</Badge>
+                    </TableCell>
+                    <TableCell>{formatDate(device.last_seen_at)}</TableCell>
+                    <TableCell className="space-x-1 text-right">
+                      <Button size="sm" variant="outline" onClick={() => sendCommand(device, "reboot")} title="Redémarrer">
+                        Reboot
                       </Button>
-                    )}
-                    {device.status === "approved" && (
-                      <Button size="sm" variant="destructive" onClick={() => act(device, "block")}>
-                        Bloquer
+                      <Button size="sm" variant="outline" onClick={() => sendCommand(device, "resync")} title="Re-synchroniser">
+                        Resync
                       </Button>
-                    )}
-                  </TableCell>
-                </TableRow>
-              ))}
+                      {device.status === "pending" && (
+                        <Button size="sm" onClick={() => act(device, "approve")}>Approuver</Button>
+                      )}
+                      {device.status === "approved" && (
+                        <>
+                          <Button size="sm" variant="secondary" onClick={() => act(device, "maintenance")}>
+                            Maintenance
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={() => rotate(device)}>
+                            Token
+                          </Button>
+                          <Button size="sm" variant="destructive" onClick={() => act(device, "disable")}>
+                            Désactiver
+                          </Button>
+                          <Button size="sm" variant="destructive" onClick={() => act(device, "block")}>
+                            Bloquer
+                          </Button>
+                        </>
+                      )}
+                      {device.status === "disabled" && (
+                        <Button size="sm" onClick={() => act(device, "enable")}>Réactiver</Button>
+                      )}
+                      {device.status === "maintenance" && (
+                        <Button size="sm" onClick={() => act(device, "enable")}>Sortir maintenance</Button>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
               {devices.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={4} className="text-muted-foreground">

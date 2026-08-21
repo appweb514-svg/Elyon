@@ -19,3 +19,4 @@ coverage/
 htmlcov/
 .DS_Store
 *.log
+tsconfig.tsbuildinfo

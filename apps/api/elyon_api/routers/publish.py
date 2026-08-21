@@ -4,14 +4,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from elyon_api.db import get_db
-from elyon_api.deps import audit, get_device_from_request, require_roles, require_site_access
-from elyon_api.models import Device, Role, User
+from elyon_api.deps import audit, get_device_from_request, require_permission, require_site_access
+from elyon_api.models import Device, User
+from elyon_api.permissions import Permission
 from elyon_api.schemas import ManifestOut
 from elyon_api.services.manifest import latest_manifest, publish_manifest
 
 router = APIRouter(prefix="/api", tags=["publish"])
-
-admin = require_roles(Role.SUPERADMIN, Role.ORG_ADMIN, Role.SITE_MANAGER)
 
 
 def _get_device(db: Session, user: User, device_id: str) -> Device:
@@ -26,7 +25,7 @@ def _get_device(db: Session, user: User, device_id: str) -> Device:
 def publish(
     device_id: str,
     request: Request,
-    user: User = Depends(admin),
+    user: User = Depends(require_permission(Permission.SCHEDULE_PUBLISH)),
     db: Session = Depends(get_db),
 ) -> ManifestOut:
     device = _get_device(db, user, device_id)

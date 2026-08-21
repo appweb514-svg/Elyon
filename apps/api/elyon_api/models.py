@@ -54,6 +54,9 @@ class DeviceStatus(enum.StrEnum):
     PENDING = "pending"
     APPROVED = "approved"
     BLOCKED = "blocked"
+    DISABLED = "disabled"
+    MAINTENANCE = "maintenance"
+    SYNCING = "syncing"
 
 
 class MediaKind(enum.StrEnum):
@@ -116,6 +119,9 @@ class User(Base):
     org_id: Mapped[str | None] = mapped_column(
         ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True
     )
+    site_id: Mapped[str | None] = mapped_column(
+        ForeignKey("sites.id", ondelete="SET NULL"), nullable=True
+    )
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
     full_name: Mapped[str] = mapped_column(String(120))
@@ -124,6 +130,7 @@ class User(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=now)
 
     organization: Mapped[Organization | None] = relationship(back_populates="users")
+    site: Mapped[Site | None] = relationship()
 
 
 class Site(Base):
@@ -192,6 +199,7 @@ class Screen(Base):
     device_id: Mapped[str | None] = mapped_column(
         ForeignKey("devices.id", ondelete="SET NULL"), nullable=True
     )
+    layout_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=now)
 
     site: Mapped[Site] = relationship(back_populates="screens")

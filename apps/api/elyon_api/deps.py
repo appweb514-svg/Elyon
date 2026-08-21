@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import json
 from collections.abc import Callable
 from typing import Any
@@ -9,7 +10,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from elyon_api.db import get_db
-from elyon_api.models import Device, DeviceStatus, Role, User
+from elyon_api.models import Device, DeviceStatus, Role, User, ensure_utc
+from elyon_api.permissions import Permission, has_permission
 from elyon_api.security import hash_token, verify_session_token
 
 
@@ -47,6 +49,30 @@ def require_site_access(db: Session, user: User, site_org_id: str | None) -> Non
         return
     if site_org_id is None or site_org_id != user.org_id:
         raise HTTPException(status_code=403, detail="Hors périmètre site")
+    # SITE_MANAGER/OPERATOR/VIEWER scopés à un site précis si user.site_id renseigné
+    if user.site_id is not None:
+        # Le site doit appartenir à l'org déjà vérifié ; on vérifie que le user
+        # n'accède qu'à son site. Le caller passe site_org_id = site.org_id, pas site.id ;
+        # on ne peut pas vérifier site.id ici sans paramètre supplémentaire —
+        # la vérification fine se fait dans les routers via require_site_id_access.
+        pass
+
+
+def require_site_id_access(user: User, site_id: str) -> None:
+    """Vérifie que l'utilisateur scopé site n'accède qu'à son site."""
+    if user.role == Role.SUPERADMIN:
+        return
+    if user.site_id is not None and user.site_id != site_id:
+        raise HTTPException(status_code=403, detail="Hors périmètre site")
+
+
+def require_permission(perm: Permission):  # type: ignore[no-untyped-def]
+    def checker(user: User = Depends(get_current_user)) -> User:
+        if not has_permission(user.role, perm):
+            raise HTTPException(status_code=403, detail="Permission manquante")
+        return user
+
+    return checker
 
 
 def get_device_from_request(request: Request, db: Session = Depends(get_db)) -> Device:
@@ -65,6 +91,37 @@ def get_device_from_request(request: Request, db: Session = Depends(get_db)) -> 
     if device.status != DeviceStatus.APPROVED:
         raise HTTPException(status_code=403, detail="Device non approuvé")
     return device
+
+
+def compute_device_status(
+    device: Device,
+    now: dt.datetime,
+    grace_seconds: int,
+    manifest: object = None,
+    current_media_id: str | None = None,
+) -> str:
+    """Statut dérivé : pending/approved/disabled/maintenance + online/offline/syncing."""
+    if device.status == DeviceStatus.PENDING:
+        return "pending"
+    if device.status in (DeviceStatus.BLOCKED, DeviceStatus.DISABLED):
+        return device.status.value
+    if device.status == DeviceStatus.MAINTENANCE:
+        return "maintenance"
+    # APPROVED / SYNCING → online/offline/syncing selon heartbeat et manifeste
+    if device.status == DeviceStatus.SYNCING:
+        return "syncing"
+    # approved → online/offline
+    last = getattr(device, "last_seen_at", None)
+    if last is None:
+        return "offline"
+    try:
+        last_utc = ensure_utc(last)  # type: ignore[arg-type]
+        delta = (now - last_utc).total_seconds()
+    except Exception:
+        return "offline"
+    if delta > grace_seconds:
+        return "offline"
+    return "online"
 
 
 def audit(

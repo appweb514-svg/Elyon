@@ -14,11 +14,12 @@
 
 ## Autorisation
 
-RBAC à quatre rôles : `viewer` (lecture), `manager` (contenu),
-`org_admin` (administration organisation), `superadmin` (hors org).
-Chaque requête est scopée à l'organisation de l'utilisateur
-(`require_same_org`) ; un superadmin ne crée pas de contenu directement
-(il passe par un compte org_admin).
+RBAC à cinq rôles (`apps/api/elyon_api/permissions.py:18`, `apps/web/src/lib/permissions.ts:18`)
+: `viewer` (lecture site), `operator` (contenu site), `site_manager` (admin site),
+`org_admin` (admin organisation), `superadmin` (hors org, global).
+Périmètres : `global` (superadmin), `org` (org_admin), `site` (site_manager/operator/viewer via `User.site_id`).
+Chaque requête est scopée à l'organisation (`require_same_org`) puis au site (`require_site_id_access`) si renseigné ;
+un superadmin ne crée pas de contenu directement (il passe par un compte org_admin). Voir `docs/rbac.md`.
 
 ## Chaîne de confiance player ↔ serveur
 

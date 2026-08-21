@@ -26,6 +26,7 @@ class UserOut(BaseModel):
     role: Role
     is_active: bool
     org_id: str | None = None
+    site_id: str | None = None
     created_at: dt.datetime
 
     model_config = {"from_attributes": True}
@@ -37,12 +38,14 @@ class UserCreate(BaseModel):
     full_name: str = Field(min_length=1, max_length=120)
     role: Role = Role.VIEWER
     org_id: str | None = None
+    site_id: str | None = None
 
 
 class UserPatch(BaseModel):
     full_name: str | None = None
     role: Role | None = None
     is_active: bool | None = None
+    site_id: str | None = None
 
 
 class OrganizationOut(BaseModel):
@@ -77,6 +80,21 @@ class ScreenCreate(BaseModel):
     height: int = 1080
     orientation: str = "landscape"
     device_id: str | None = None
+    layout: ScreenLayout | None = None
+
+
+class ScreenLayoutZone(BaseModel):
+    x: float = Field(ge=0, le=100)
+    y: float = Field(ge=0, le=100)
+    w: float = Field(ge=0, le=100)
+    h: float = Field(ge=0, le=100)
+    media_id: str | None = None
+    playlist_id: str | None = None
+
+
+class ScreenLayout(BaseModel):
+    mode: str = Field(description="fullscreen|grid_2x2|split_h|split_v|custom")
+    zones: list[ScreenLayoutZone] = Field(default_factory=list)
 
 
 class ScreenPatch(BaseModel):
@@ -85,6 +103,7 @@ class ScreenPatch(BaseModel):
     height: int | None = None
     orientation: str | None = None
     device_id: str | None = None
+    layout: ScreenLayout | None = None
 
 
 class ScreenOut(BaseModel):
@@ -96,9 +115,18 @@ class ScreenOut(BaseModel):
     height: int
     orientation: str
     device_id: str | None = None
+    layout: ScreenLayout | None = None
     created_at: dt.datetime
 
     model_config = {"from_attributes": True}
+
+
+class DeviceStatusDetail(BaseModel):
+    raw: DeviceStatus
+    computed: str
+    last_seen_at: dt.datetime | None = None
+    screen_id: str | None = None
+    manifest_version: int | None = None
 
 
 class DeviceOut(BaseModel):
@@ -109,6 +137,7 @@ class DeviceOut(BaseModel):
     name: str
     serial: str
     status: DeviceStatus
+    computed_status: str | None = None
     last_seen_at: dt.datetime | None = None
     created_at: dt.datetime
 

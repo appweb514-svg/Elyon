@@ -91,6 +91,12 @@ def build_manifest_payload(
                         "entries": entries,
                     }
                 )
+    layout = None
+    if screen is not None and screen.layout_json:
+        try:
+            layout = json.loads(screen.layout_json)
+        except Exception:
+            layout = None
     return {
         "device_id": device.id,
         "screen_id": screen.id if screen else None,
@@ -98,6 +104,7 @@ def build_manifest_payload(
         "published_at": at.isoformat(),
         "media": [_media_entry(m, storage, settings) for m in media_by_id.values()],
         "blocks": blocks,
+        "layout": layout,
     }
 
 

@@ -4,28 +4,33 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
-  LayoutDashboard,
-  LogOut,
-  MonitorSmartphone,
-  Users,
+  CalendarClock,
   Clapperboard,
   FileVideo,
-  CalendarClock,
+  LayoutDashboard,
+  LayoutGrid,
+  LogOut,
   MapPin,
+  MonitorSmartphone,
+  ScrollText,
+  Users,
 } from "lucide-react";
 
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { hasPermission, type Role } from "@/lib/permissions";
 
 const NAV = [
-  { href: "/", label: "Tableau de bord", icon: LayoutDashboard },
-  { href: "/devices", label: "Appareils", icon: MonitorSmartphone },
-  { href: "/media", label: "Médias", icon: FileVideo },
-  { href: "/playlists", label: "Playlists", icon: Clapperboard },
-  { href: "/schedules", label: "Plannings", icon: CalendarClock },
-  { href: "/sites", label: "Sites & écrans", icon: MapPin },
-  { href: "/users", label: "Utilisateurs", icon: Users },
+  { href: "/", label: "Tableau de bord", icon: LayoutDashboard, perm: null },
+  { href: "/devices", label: "Appareils", icon: MonitorSmartphone, perm: "device.view" as const },
+  { href: "/media", label: "Médias", icon: FileVideo, perm: "media.view" as const },
+  { href: "/playlists", label: "Playlists", icon: Clapperboard, perm: "playlist.view" as const },
+  { href: "/schedules", label: "Plannings", icon: CalendarClock, perm: "schedule.view" as const },
+  { href: "/sites", label: "Sites & écrans", icon: MapPin, perm: "screen.view" as const },
+  { href: "/users", label: "Utilisateurs", icon: Users, perm: "user.view" as const },
+  { href: "/audit", label: "Audit", icon: ScrollText, perm: "audit.view" as const },
+  { href: "/layouts", label: "Dispositions", icon: LayoutGrid, perm: "screen.view" as const },
 ];
 
 type Me = {
@@ -53,6 +58,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     router.refresh();
   }
 
+  const role = (me?.role ?? "viewer") as Role;
+
   return (
     <div className="flex min-h-screen">
       <aside className="hidden w-60 shrink-0 flex-col border-r bg-card md:flex">
@@ -60,7 +67,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <span className="text-lg font-bold">Elyon</span>
         </div>
         <nav className="flex-1 space-y-1 p-2">
-          {NAV.map((item) => {
+          {NAV.filter((item) => item.perm === null || hasPermission(role, item.perm)).map((item) => {
             const active =
               item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
             return (
