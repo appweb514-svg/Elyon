@@ -1,0 +1,56 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${ELYON_POSTGRES_USER:-elyon}
+      POSTGRES_PASSWORD: ${ELYON_POSTGRES_PASSWORD:-CHANGE_ME}
+      POSTGRES_DB: ${ELYON_POSTGRES_DB:-elyon}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${ELYON_POSTGRES_USER} -d $${ELYON_POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: ./apps/api
+    environment:
+      ELYON_DATABASE_URL: ${ELYON_DATABASE_URL:-postgresql://elyon:CHANGE_ME@db:5432/elyon}
+      ELYON_REDIS_URL: ${ELYON_REDIS_URL:-redis://redis:6379/0}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+
+  worker:
+    build:
+      context: ./apps/api
+      dockerfile: ../worker/Dockerfile
+    environment:
+      ELYON_DATABASE_URL: ${ELYON_DATABASE_URL:-postgresql://elyon:CHANGE_ME@db:5432/elyon}
+      ELYON_REDIS_URL: ${ELYON_REDIS_URL:-redis://redis:6379/0}
+    depends_on:
+      api:
+        condition: service_started
+
+  web:
+    build: ./apps/web
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:
