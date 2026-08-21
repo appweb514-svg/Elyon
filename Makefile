@@ -11,18 +11,20 @@ help:
 lint: lint-python lint-web ## Lint Python et Web
 
 lint-python: ## Lint Python (ruff + mypy)
-	ruff check apps/api && ruff check player/agent
+	ruff check apps/api && ruff check player/agent && ruff check player/playback
 	mypy apps/api/elyon_api
 	mypy player/agent/elyon_agent --config-file player/agent/pyproject.toml
+	mypy player/playback/elyon_playback --config-file player/playback/pyproject.toml
 
 lint-web: ## Lint Web (eslint)
 	pnpm --filter @elyon/web exec eslint .
 
 test: test-python test-web ## Tests Python et Web
 
-test-python: ## Tests Python (pytest : api + agent)
+test-python: ## Tests Python (pytest : api + agent + playback)
 	pytest apps/api
 	pytest player/agent --rootdir=player/agent
+	pytest player/playback --rootdir=player/playback
 
 test-web: ## Tests Web (vitest)
 	pnpm --filter @elyon/web exec vitest run
