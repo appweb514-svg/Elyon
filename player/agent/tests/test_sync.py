@@ -63,6 +63,23 @@ class TestSyncBasics:
         assert entry["page_blobs"] == []
         assert len(layout["blocks"]) == 1
 
+    def test_build_layout_keeps_widgets(self, store):
+        payload = {
+            "published_at": "2026-01-01T00:00:00Z",
+            "media": [],
+            "blocks": [],
+            "widgets": [
+                {"type": "clock", "position": "bottom-right", "visible": True,
+                 "params": {"format": "HH:MM:SS"}},
+            ],
+        }
+        layout = store.build_layout(payload)
+        assert layout["widgets"] == payload["widgets"]
+
+    def test_build_layout_widgets_default_empty(self, store):
+        layout = store.build_layout({"published_at": "x", "media": [], "blocks": []})
+        assert layout["widgets"] == []
+
     def test_idempotent_second_sync(self, sync_env):
         env = sync_env
         result = env["synchronizer"].sync(env["manifest"], env["payload"])
@@ -229,7 +246,8 @@ class TestGarbageCollection:
         sha1 = payload1["media"][0]["sha256"]
         assert store.blob_path(sha1).exists()
 
-        # Désactive le planning et republie : v2 sans média.
+        # Désactive le planning : le serveur republie automatiquement (v2)
+        # sans média ; le publish manuel crée v3, au contenu identique.
         schedule_id = payload1["blocks"][0]["schedule_id"]
         patch = api.patch(
             f"/api/schedules/{schedule_id}",
@@ -252,4 +270,6 @@ class TestGarbageCollection:
         assert not store.blob_path(sha1).exists()
         assert store.read_current_layout()["media"] == []
         releases = store.list_releases()
-        assert [p.name for p in releases] == ["v1", "v2"]
+        # v2 (républication auto du patch) puis v3 (publish manuel) : le GC ne
+        # conserve que les 2 dernières releases.
+        assert [p.name for p in releases] == ["v1", "v3"]

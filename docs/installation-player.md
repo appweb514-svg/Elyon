@@ -47,6 +47,17 @@ systemctl status elyon-agent        # état
 journalctl -u elyon-agent -f        # logs
 ```
 
+## Lab sans matériel (Raspberry émulés)
+
+Pour valider enrôlement, sync, heartbeat et commandes sans Pi physique :
+
+```bash
+make lab
+```
+
+Deux conteneurs Debian Bookworm exécutent le même agent/moteur que sur
+Raspberry Pi OS (`emu-rpi-1`, `emu-rpi-2`). Détail : `docs/lab.md`.
+
 ## Validation matérielle (hors CI)
 
 - **Pi 4 et Pi 5** : lecture H.264 1080p fluide (`mpv --hwdec=auto`),

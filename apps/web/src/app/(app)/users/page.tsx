@@ -37,6 +37,7 @@ type User = {
 
 type Organization = { id: string; name: string; slug: string; quota_bytes: number };
 type Site = { id: string; name: string };
+type Team = { id: string; name: string; quota_bytes: number; members: number };
 
 type Me = { id: string; role: string; org_id: string | null; site_id: string | null };
 
@@ -59,6 +60,7 @@ export default function UsersPage() {
   const [users, setUsers] = useState<User[]>([]);
   const [orgs, setOrgs] = useState<Organization[]>([]);
   const [sites, setSites] = useState<Site[]>([]);
+  const [teams, setTeams] = useState<Team[]>([]);
   const [me, setMe] = useState<Me | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -68,6 +70,8 @@ export default function UsersPage() {
   const [role, setRole] = useState("viewer");
   const [orgId, setOrgId] = useState("");
   const [siteId, setSiteId] = useState("");
+  const [teamId, setTeamId] = useState("");
+  const [quotaGb, setQuotaGb] = useState("");
 
   const reload = useCallback(async () => {
     try {
@@ -82,7 +86,11 @@ export default function UsersPage() {
         setOrgs(orgList);
       }
       if (meData.role === "superadmin" || meData.role === "org_admin") {
-        const siteList = await api.get<Site[]>("/api/sites").catch(() => [] as Site[]);
+        const [siteList, teamList] = await Promise.all([
+          api.get<Site[]>("/api/sites").catch(() => [] as Site[]),
+          api.get<Team[]>("/api/teams").catch(() => [] as Team[]),
+        ]);
+        setTeams(teamList);
         setSites(siteList as Site[]);
       }
       setError(null);
@@ -108,11 +116,15 @@ export default function UsersPage() {
         role,
         org_id: orgId || null,
         site_id: siteId || null,
+        team_id: teamId || null,
+        quota_bytes: quotaGb ? Math.round(Number(quotaGb) * 1024 ** 3) : 0,
       });
       setEmail("");
       setFullName("");
       setPassword("");
       setSiteId("");
+      setTeamId("");
+      setQuotaGb("");
       await reload();
     } catch (err) {
       setError(String((err as Error).message ?? err));
@@ -226,6 +238,30 @@ export default function UsersPage() {
                 </Select>
               </div>
             )}
+            {teams.length > 0 && (
+              <div className="space-y-2">
+                <Label htmlFor="u-team">Équipe (bibliothèque partagée)</Label>
+                <Select id="u-team" value={teamId} onChange={(e) => setTeamId(e.target.value)}>
+                  <option value="">— Aucune (bibliothèque personnelle) —</option>
+                  {teams.map((team) => (
+                    <option key={team.id} value={team.id}>
+                      {team.name}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+            )}
+            <div className="space-y-2">
+              <Label htmlFor="u-quota">Quota perso (Go)</Label>
+              <Input
+                id="u-quota"
+                type="number"
+                min={0}
+                value={quotaGb}
+                onChange={(e) => setQuotaGb(e.target.value)}
+                placeholder="Illimité"
+              />
+            </div>
             <Button onClick={create} className="md:col-span-2">
               Créer
             </Button>
@@ -290,21 +326,23 @@ export default function UsersPage() {
                     )}
                   </TableCell>
                   <TableCell>{formatDate(user.created_at)}</TableCell>
-                  <TableCell className="space-x-1 text-right">
-                    {canEdit && user.id !== me?.id && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => patchUser(user, { is_active: !user.is_active })}
-                      >
-                        {user.is_active ? "Désactiver" : "Réactiver"}
-                      </Button>
-                    )}
-                    {canDelete && user.id !== me?.id && (
-                      <Button size="sm" variant="destructive" onClick={() => deleteUser(user)}>
-                        Supprimer
-                      </Button>
-                    )}
+                  <TableCell className="text-right">
+                    <div className="flex flex-wrap justify-end gap-1">
+                      {canEdit && user.id !== me?.id && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => patchUser(user, { is_active: !user.is_active })}
+                        >
+                          {user.is_active ? "Désactiver" : "Réactiver"}
+                        </Button>
+                      )}
+                      {canDelete && user.id !== me?.id && (
+                        <Button size="sm" variant="destructive" onClick={() => deleteUser(user)}>
+                          Supprimer
+                        </Button>
+                      )}
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}

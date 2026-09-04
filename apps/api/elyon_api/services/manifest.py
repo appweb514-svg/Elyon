@@ -3,12 +3,22 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+from types import SimpleNamespace
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from elyon_api.config import Settings
-from elyon_api.models import Device, Manifest, Media, MediaKind, MediaStatus, PlaylistItem
+from elyon_api.models import (
+    Device,
+    Manifest,
+    Media,
+    MediaKind,
+    MediaStatus,
+    PlaylistItem,
+    PlaylistRevision,
+)
+from elyon_api.services.playlist_revision import revision_items
 from elyon_api.services.schedule import active_schedules
 from elyon_api.services.signing import load_or_create_signing_key, sign_json
 from elyon_api.services.storage import StorageBackend, build_storage
@@ -36,7 +46,7 @@ def _media_entry(media: Media, storage: StorageBackend, settings: Settings) -> d
         "size_bytes": media.size_bytes,
         "pages": json.loads(media.pages_json) if media.pages_json else None,
     }
-    if media.kind == MediaKind.PDF and media.pages_json:
+    if media.kind in (MediaKind.PDF, MediaKind.OFFICE) and media.pages_json:
         page_files = []
         for index, page_path in enumerate(json.loads(media.pages_json)):
             sha, size = _file_digest(storage, page_path)
@@ -61,15 +71,31 @@ def build_manifest_payload(
     media_by_id: dict[str, Media] = {}
     storage = build_storage(settings)
     if screen is not None and site is not None:
-        for schedule in active_schedules(db, site.id, at):
-            items = db.scalars(
-                select(PlaylistItem)
-                .where(PlaylistItem.playlist_id == schedule.playlist_id)
-                .order_by(PlaylistItem.position)
-            ).all()
+        for schedule in active_schedules(db, site.id, at, device_id=device.id):
+            playlist = schedule.playlist
+            revision = None if device.is_preview else (
+                db.get(PlaylistRevision, playlist.published_revision_id)
+                if playlist.published_revision_id
+                else None
+            )
+            if revision is not None:
+                item_rows = revision_items(revision)
+            else:
+                item_rows = [
+                    {
+                        "media_id": item.media_id,
+                        "position": item.position,
+                        "duration_seconds": item.duration_seconds,
+                    }
+                    for item in db.scalars(
+                        select(PlaylistItem)
+                        .where(PlaylistItem.playlist_id == schedule.playlist_id)
+                        .order_by(PlaylistItem.position)
+                    )
+                ]
             entries = []
-            for item in items:
-                media = db.get(Media, item.media_id)
+            for item in item_rows:
+                media = db.get(Media, item["media_id"])
                 if media is None or media.status != MediaStatus.READY:
                     continue
                 media_by_id[media.id] = media
@@ -78,7 +104,7 @@ def build_manifest_payload(
                         "media_id": media.id,
                         "name": media.name,
                         "kind": media.kind.value,
-                        "duration_seconds": item.duration_seconds,
+                        "duration_seconds": item.get("duration_seconds"),
                     }
                 )
             if entries:
@@ -97,6 +123,12 @@ def build_manifest_payload(
             layout = json.loads(screen.layout_json)
         except Exception:
             layout = None
+    widgets = None
+    if screen is not None and screen.widgets_json:
+        try:
+            widgets = json.loads(screen.widgets_json)
+        except Exception:
+            widgets = None
     return {
         "device_id": device.id,
         "screen_id": screen.id if screen else None,
@@ -105,6 +137,7 @@ def build_manifest_payload(
         "media": [_media_entry(m, storage, settings) for m in media_by_id.values()],
         "blocks": blocks,
         "layout": layout,
+        "widgets": widgets,
     }
 
 
@@ -128,6 +161,26 @@ def publish_manifest(db: Session, device: Device, settings: Settings) -> Manifes
     db.commit()
     db.refresh(manifest)
     return manifest
+
+
+def live_preview_manifest(db: Session, device: Device, settings: Settings) -> SimpleNamespace:
+    """Manifeste signé à la volée pour le Raspberry d'aperçu admin (brouillon)."""
+    at = dt.datetime.now(dt.UTC)
+    payload = build_manifest_payload(db, device, settings, at)
+    payload["preview"] = True
+    # Horodatage stable : le versioning ne change que si le contenu change.
+    payload["published_at"] = "preview"
+    private_key = load_or_create_signing_key(settings)
+    payload_json, signature = sign_json(payload, private_key)
+    version = int(hashlib.sha256(payload_json.encode()).hexdigest()[:8], 16) % 2_000_000_000
+    return SimpleNamespace(
+        version=max(version, 1),
+        payload=payload_json,
+        signature=signature,
+        published_at=at,
+        device_id=device.id,
+        screen_id=payload.get("screen_id"),
+    )
 
 
 def latest_manifest(db: Session, device_id: str) -> Manifest | None:

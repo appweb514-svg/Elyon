@@ -43,7 +43,9 @@ atomique des contenus et un trafic HTTPS sortant uniquement.
 - **Lecture (`player/playback`)** — file construite depuis le layout
   (priorité desc, schedule_id asc), mpv pour images/vidéos/pages PDF,
   blank asynchrone, superviseur avec watchdog fichier et limite de
-  redémarrages.
+  redémarrages. En lab, `DummyRenderer` headless remplace mpv.
+- **Lab Raspberry émulé** — `compose.lab.yaml` lance N conteneurs Debian
+  Bookworm avec le même agent/moteur (`make lab`, voir `docs/lab.md`).
 
 ## Flux de diffusion
 

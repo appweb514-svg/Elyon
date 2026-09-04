@@ -5,7 +5,7 @@ import datetime as dt
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from elyon_api.models import Schedule, ensure_utc
+from elyon_api.models import Schedule, ScheduleExclusion, ensure_utc
 
 
 def overlaps(
@@ -40,7 +40,17 @@ def find_overlaps(
     return results
 
 
-def active_schedules(db: Session, site_id: str, at: dt.datetime) -> list[Schedule]:
+def active_schedules(
+    db: Session,
+    site_id: str,
+    at: dt.datetime,
+    device_id: str | None = None,
+) -> list[Schedule]:
+    """Plannings actifs pour un site à l'instant donné.
+
+    Un planning ciblant un device précis (`device_id` renseigné) ne s'applique
+    qu'à cet écran ; les plannings sans cible valent pour tous les écrans.
+    """
     at = ensure_utc(at)
     stmt = select(Schedule).where(
         Schedule.site_id == site_id,
@@ -48,4 +58,17 @@ def active_schedules(db: Session, site_id: str, at: dt.datetime) -> list[Schedul
         Schedule.start_at <= at,
         Schedule.end_at > at,
     )
-    return sort_schedules(list(db.scalars(stmt)))
+    schedules = list(db.scalars(stmt))
+    if device_id is not None:
+        excluded = set(
+            db.scalars(
+                select(ScheduleExclusion.schedule_id).where(
+                    ScheduleExclusion.device_id == device_id
+                )
+            )
+        )
+        schedules = [
+            s for s in schedules
+            if (s.device_id is None or s.device_id == device_id) and s.id not in excluded
+        ]
+    return sort_schedules(schedules)

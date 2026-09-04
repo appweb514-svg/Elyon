@@ -18,6 +18,7 @@ export type Permission =
   | "playlist.create"
   | "playlist.edit"
   | "playlist.delete"
+  | "playlist.publish"
   | "schedule.view"
   | "schedule.create"
   | "schedule.edit"
@@ -37,7 +38,7 @@ const ALL: Permission[] = [
   "screen.view", "screen.create", "screen.edit", "screen.delete", "screen.assign",
   "device.view", "device.approve", "device.disable", "device.command", "device.update",
   "media.view", "media.upload", "media.edit", "media.delete", "media.publish",
-  "playlist.view", "playlist.create", "playlist.edit", "playlist.delete",
+  "playlist.view", "playlist.create", "playlist.edit", "playlist.delete", "playlist.publish",
   "schedule.view", "schedule.create", "schedule.edit", "schedule.delete", "schedule.publish",
   "user.view", "user.create", "user.edit", "user.delete",
   "audit.view",
@@ -50,7 +51,7 @@ export const ROLE_PERMISSIONS: Record<Role, Set<Permission>> = {
     "screen.view", "screen.create", "screen.edit", "screen.delete", "screen.assign",
     "device.view", "device.approve", "device.disable", "device.command", "device.update",
     "media.view", "media.upload", "media.edit", "media.delete", "media.publish",
-    "playlist.view", "playlist.create", "playlist.edit", "playlist.delete",
+    "playlist.view", "playlist.create", "playlist.edit", "playlist.delete", "playlist.publish",
     "schedule.view", "schedule.create", "schedule.edit", "schedule.delete", "schedule.publish",
     "user.view",
     "audit.view",
@@ -58,8 +59,8 @@ export const ROLE_PERMISSIONS: Record<Role, Set<Permission>> = {
   operator: new Set<Permission>([
     "screen.view",
     "device.view", "device.command",
-    "media.view", "media.upload", "media.edit",
-    "playlist.view", "playlist.create", "playlist.edit",
+    "media.view", "media.upload", "media.edit", "media.delete",
+    "playlist.view", "playlist.create", "playlist.edit", "playlist.publish",
     "schedule.view", "schedule.create", "schedule.edit",
   ]),
   viewer: new Set<Permission>([

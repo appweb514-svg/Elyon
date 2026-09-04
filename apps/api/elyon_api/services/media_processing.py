@@ -35,6 +35,30 @@ def _pdf_to_images(pdf_path: Path, out_dir: Path) -> list[str]:
     return pages
 
 
+def _office_to_pdf(src: Path, out_dir: Path) -> Path:
+    """Convertit un document Office (pptx/docx/odp…) en PDF via LibreOffice.
+
+    Les présentations deviennent ainsi un diaporama : une image par diapositive.
+    """
+    if shutil.which("soffice") is None and shutil.which("libreoffice") is None:
+        raise RuntimeError("LibreOffice requis pour les documents Office")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    binary = "soffice" if shutil.which("soffice") else "libreoffice"
+    subprocess.run(
+        [
+            binary, "--headless", "--norestore", "--convert-to", "pdf",
+            "--outdir", str(out_dir), str(src),
+        ],
+        check=True,
+        capture_output=True,
+        timeout=180,
+    )
+    pdf = out_dir / (src.stem + ".pdf")
+    if not pdf.exists():
+        raise RuntimeError("La conversion Office → PDF a échoué")
+    return pdf
+
+
 def process_media(media: Media, settings: Settings, storage: LocalStorage | None = None) -> Media:
     storage = storage or LocalStorage(settings.media_storage_root)
     src = storage._abs(media.storage_path)  # noqa: SLF001
@@ -49,5 +73,15 @@ def process_media(media: Media, settings: Settings, storage: LocalStorage | None
         out_dir = safe_storage_path(f"pdf/{media.id}")
         pages = _pdf_to_images(src, storage._abs(out_dir))  # noqa: SLF001
         media.pages_json = json.dumps([safe_storage_path(f"{out_dir}/{p}") for p in pages])
+    elif media.kind == MediaKind.OFFICE:
+        # Diaporama : conversion en PDF puis une image par page/diapositive.
+        out_dir = safe_storage_path(f"office/{media.id}")
+        pdf = _office_to_pdf(src, storage._abs(out_dir))  # noqa: SLF001
+        rel_pdf = safe_storage_path(f"{out_dir}/{pdf.name}")
+        pages_dir = safe_storage_path(f"office/{media.id}/pages")
+        pages = _pdf_to_images(pdf, storage._abs(pages_dir))  # noqa: SLF001
+        media.pages_json = json.dumps([safe_storage_path(f"{pages_dir}/{p}") for p in pages])
+        # Le PDF converti reste téléchargeable / diffusable tel quel.
+        media.storage_path = rel_pdf
     media.status = MediaStatus.READY
     return media

@@ -1,6 +1,8 @@
 import "./globals.css";
 import { Suspense } from "react";
 
+import { GlowBackground } from "@/components/glow-background";
+
 export const metadata = {
   title: "Elyon",
   description: "Affichage dynamique centralisé",
@@ -13,7 +15,8 @@ export default function RootLayout({
 }) {
   return (
     <html lang="fr">
-      <body>
+      <body className="min-h-screen">
+        <GlowBackground />
         <Suspense>{children}</Suspense>
       </body>
     </html>

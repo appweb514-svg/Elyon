@@ -8,7 +8,19 @@ from fastapi.responses import JSONResponse
 
 from elyon_api.config import Settings
 from elyon_api.db import build_session_factory
-from elyon_api.routers import auth, content, enroll, media, ops, publish, sites, users
+from elyon_api.routers import (
+    auth,
+    content,
+    enroll,
+    groups,
+    media,
+    ops,
+    publish,
+    sites,
+    teams,
+    triggers,
+    users,
+)
 
 settings = Settings()
 
@@ -30,7 +42,27 @@ async def lifespan(app: FastAPI):
     app.state.session_factory = build_session_factory(settings)
     if settings.auto_migrate:
         migrate(settings)
-    yield
+    # Purge de la corbeille (>30 jours) au démarrage puis toutes les 6 h.
+    import asyncio
+
+    from elyon_api.services.trash import purge_expired_trash
+
+    async def _trash_sweeper() -> None:
+        from elyon_api.services.alerts import sweep_offline_alerts
+
+        while True:
+            try:
+                purge_expired_trash(app.state.session_factory, app.state.settings)
+                sweep_offline_alerts(app.state.session_factory, app.state.settings)
+            except Exception:  # noqa: BLE001 — jamais bloquant
+                pass
+            await asyncio.sleep(60 if app.state.settings.alert_smtp_host else 6 * 3600)
+
+    sweeper = asyncio.create_task(_trash_sweeper())
+    try:
+        yield
+    finally:
+        sweeper.cancel()
 
 
 def create_app(app_settings: Settings | None = None, run_migrations: bool = True) -> FastAPI:
@@ -65,11 +97,13 @@ def create_app(app_settings: Settings | None = None, run_migrations: bool = True
             "/api/enroll/request",
             "/api/auth/bootstrap",
             "/api/auth/login",
+            "/api/server/public-key",
         }
         csrf_required = (
             method in {"POST", "PUT", "PATCH", "DELETE"}
             and request.url.path.startswith("/api")
             and request.url.path not in exempt
+            and not request.url.path.startswith("/api/trigger/")
             and not request.headers.get("Authorization", "").startswith("Bearer ")
         )
         if csrf_required:
@@ -83,7 +117,10 @@ def create_app(app_settings: Settings | None = None, run_migrations: bool = True
     application.include_router(users.router)
     application.include_router(sites.router)
     application.include_router(enroll.router)
+    application.include_router(groups.router)
+    application.include_router(triggers.router)
     application.include_router(media.router)
+    application.include_router(teams.router)
     application.include_router(content.router)
     application.include_router(publish.router)
     application.include_router(ops.router)

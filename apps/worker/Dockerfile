@@ -10,7 +10,9 @@ COPY elyon_api/ elyon_api/
 COPY migrations/ migrations/
 RUN pip install --no-cache-dir .
 
-RUN useradd --uid 10001 --create-home elyon
+RUN useradd --uid 10001 --create-home elyon \
+    && mkdir -p /var/lib/elyon/media \
+    && chown -R elyon:elyon /var/lib/elyon
 USER elyon
 
 CMD ["celery", "-A", "elyon_api.worker", "worker", "--loglevel=info"]

@@ -24,7 +24,21 @@ class Settings(BaseSettings):
     signing_key_file: Path = Path("/var/lib/elyon/signing_key.pem")
     auto_migrate: bool = True
     org_quota_bytes: int = 20 * 1024**3
+    user_quota_bytes: int = 5 * 1024**3
     max_media_bytes: int = 500 * 1024**2
     enrollment_code_ttl_seconds: int = 600
     offline_grace_seconds: int = 90
     max_login_attempts_per_minute: int = 10
+    enqueue_media_processing: bool = True
+    process_media_inline: bool = False
+    # Alertes offline par e-mail (SMTP). Vide = désactivé.
+    alert_smtp_host: str = ""
+    alert_smtp_port: int = 587
+    alert_smtp_user: str = ""
+    alert_smtp_password: str = ""
+    alert_smtp_from: str = ""
+    alert_smtp_starttls: bool = True
+    alert_smtp_to: str = ""  # destinataires séparés par des virgules
+    # Webhook d'urgence (type « Afficher » depuis un système externe).
+    # Clé secrète partagée — vide = désactivé.
+    trigger_secret: str = ""

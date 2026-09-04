@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from elyon_api.db import get_db
 from elyon_api.deps import audit, require_permission, require_roles
-from elyon_api.models import Organization, Role, Site, User
+from elyon_api.models import Organization, Role, Site, Team, User
 from elyon_api.permissions import Permission
 from elyon_api.schemas import OrganizationOut, UserCreate, UserOut, UserPatch
 from elyon_api.security import hash_password
@@ -93,10 +93,18 @@ def create_user(
     org = _get_org(db, user, body.org_id)
     if org is None and body.role != Role.SUPERADMIN:
         raise HTTPException(status_code=400, detail="org_id requis pour ce rôle")
+    # Équipe : doit appartenir à l'organisation du compte créé.
+    team = None
+    if body.team_id:
+        team = db.get(Team, body.team_id)
+        if team is None or (org and team.org_id != org.id):
+            raise HTTPException(status_code=400, detail="Équipe invalide")
     if db.scalar(select(User).where(User.email == str(body.email).lower())):
         raise HTTPException(status_code=409, detail="Email déjà utilisé")
     new_user = User(
         org_id=org.id if org else None,
+        team_id=team.id if team else None,
+        quota_bytes=body.quota_bytes,
         site_id=body.site_id,
         email=str(body.email).lower(),
         password_hash=hash_password(body.password),
@@ -163,6 +171,16 @@ def patch_user(
             if site is None or site.org_id != target.org_id:
                 raise HTTPException(status_code=400, detail="site_id invalide")
             target.site_id = site.id
+    if body.team_id is not None:
+        if body.team_id == "":
+            target.team_id = None
+        else:
+            team = db.get(Team, body.team_id)
+            if team is None or team.org_id != target.org_id:
+                raise HTTPException(status_code=400, detail="Équipe invalide")
+            target.team_id = team.id
+    if body.quota_bytes is not None:
+        target.quota_bytes = body.quota_bytes
     if body.is_active is not None:
         target.is_active = body.is_active
     db.commit()

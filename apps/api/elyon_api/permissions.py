@@ -25,6 +25,7 @@ class Permission(enum.StrEnum):
     PLAYLIST_CREATE = "playlist.create"
     PLAYLIST_EDIT = "playlist.edit"
     PLAYLIST_DELETE = "playlist.delete"
+    PLAYLIST_PUBLISH = "playlist.publish"
     SCHEDULE_VIEW = "schedule.view"
     SCHEDULE_CREATE = "schedule.create"
     SCHEDULE_EDIT = "schedule.edit"
@@ -51,8 +52,9 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.MEDIA_VIEW, Permission.MEDIA_UPLOAD, Permission.MEDIA_EDIT,
             Permission.MEDIA_DELETE, Permission.MEDIA_PUBLISH,
             Permission.PLAYLIST_VIEW, Permission.PLAYLIST_CREATE, Permission.PLAYLIST_EDIT,
-            Permission.PLAYLIST_DELETE,
-            Permission.SCHEDULE_VIEW, Permission.SCHEDULE_CREATE, Permission.SCHEDULE_EDIT,
+             Permission.PLAYLIST_DELETE, Permission.PLAYLIST_PUBLISH,
+             Permission.SCHEDULE_VIEW, Permission.SCHEDULE_CREATE, Permission.SCHEDULE_EDIT,
+
             Permission.SCHEDULE_DELETE, Permission.SCHEDULE_PUBLISH,
             Permission.USER_VIEW,
             Permission.AUDIT_VIEW,
@@ -63,8 +65,11 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.SCREEN_VIEW,
             Permission.DEVICE_VIEW, Permission.DEVICE_COMMAND,
             Permission.MEDIA_VIEW, Permission.MEDIA_UPLOAD, Permission.MEDIA_EDIT,
-            Permission.PLAYLIST_VIEW, Permission.PLAYLIST_CREATE, Permission.PLAYLIST_EDIT,
-            Permission.SCHEDULE_VIEW, Permission.SCHEDULE_CREATE, Permission.SCHEDULE_EDIT,
+            Permission.MEDIA_DELETE,
+             Permission.PLAYLIST_VIEW, Permission.PLAYLIST_CREATE, Permission.PLAYLIST_EDIT,
+             Permission.PLAYLIST_PUBLISH,
+             Permission.SCHEDULE_VIEW, Permission.SCHEDULE_CREATE, Permission.SCHEDULE_EDIT,
+
         ]
     ),
     Role.VIEWER: frozenset(

@@ -10,6 +10,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.vite/
 .env
 .env.*
 !.env.example
@@ -20,3 +21,4 @@ htmlcov/
 .DS_Store
 *.log
 tsconfig.tsbuildinfo
+.lab/

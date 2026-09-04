@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
+import time
+from collections.abc import Sequence
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -15,25 +20,32 @@ from elyon_api.deps import (
     require_site_access,
 )
 from elyon_api.models import (
+    AuditLog,
     Command,
     CommandStatus,
+    CommandType,
     Device,
     DeviceStatus,
     Event,
     EventLevel,
+    Manifest,
     Media,
+    MediaKind,
+    MediaStatus,
     Role,
     User,
     ensure_utc,
 )
 from elyon_api.permissions import Permission
 from elyon_api.schemas import (
+    AuditLogOut,
     CommandAck,
     CommandIn,
     CommandOut,
     EventOut,
     HeartbeatIn,
 )
+from elyon_api.services.storage import build_storage
 
 router = APIRouter(prefix="/api", tags=["ops"])
 
@@ -85,19 +97,73 @@ def heartbeat(
     was_offline = last is None or (now - last).total_seconds() > settings.offline_grace_seconds
     first_seen = device.last_seen_at is None
     device.last_seen_at = now
+    device.player_state = body.state
+    device.current_media_id = body.current_media_id
+    # Télémétrie
+    device.uptime_seconds = body.uptime_seconds
+    device.load_avg = body.load_avg
+    device.memory_percent = body.memory_percent
+    device.cpu_percent = body.cpu_percent
+    device.storage_free_bytes = body.storage_free_bytes
+    device.lan_ip = body.lan_ip
+    device.wifi_ssid = body.wifi_ssid
     db.commit()
     if first_seen:
         _add_event(db, device.org_id, device.site_id, device.id, "device_online",
-                   EventLevel.INFO, f"Player {device.name} connecté")
+                   EventLevel.INFO, f"Appareil {device.name} connecté")
     elif was_offline:
         _add_event(db, device.org_id, device.site_id, device.id, "device_online",
-                   EventLevel.INFO, f"Player {device.name} de retour")
+                   EventLevel.INFO, f"Appareil {device.name} de retour")
+    # Proof-of-play : journaliser tout changement de média ou d'état
+    _record_playback(db, device, body)
     db.commit()
+    interval = 5 if device.is_preview else settings.heartbeat_interval_seconds
     return {
         "status": "ok",
         "server_time": now.isoformat(),
-        "heartbeat_interval_seconds": settings.heartbeat_interval_seconds,
+        "heartbeat_interval_seconds": interval,
     }
+
+
+def _record_playback(db: Session, device: Device, body: HeartbeatIn) -> None:
+    """Insère un événement de lecture si l'état ou le média a changé.
+
+    Chaque heartbeat avec `state=playing` et un `current_media_id` différent
+    déclenche un enregistrement dans `playback_events` — base du proof-of-play.
+    """
+    from elyon_api.models import PlaybackEvent as _PE
+
+    if device.current_media_id is None and body.state != "idle":
+        return
+    if body.state == "idle":
+        if device.current_media_id is not None:
+            last = db.scalar(
+                select(_PE)
+                .where(_PE.device_id == device.id)
+                .order_by(_PE.recorded_at.desc())
+                .limit(1)
+            )
+            if last is not None and last.state == "playing":
+                db.add(
+                    _PE(
+                        org_id=device.org_id,
+                        device_id=device.id,
+                        media_id=device.current_media_id,
+                        state="end",
+                        recorded_at=dt.datetime.now(dt.UTC),
+                    )
+                )
+        return
+    if body.state == "playing" and device.current_media_id is not None:
+        db.add(
+            _PE(
+                org_id=device.org_id,
+                device_id=device.id,
+                media_id=device.current_media_id,
+                state="playing",
+                recorded_at=dt.datetime.now(dt.UTC),
+            )
+        )
 
 
 @router.get("/devices/{device_id}/commands")
@@ -244,6 +310,8 @@ def admin_heartbeat(
         "status": "ok",
         "last_seen_at": device.last_seen_at.isoformat() if device.last_seen_at else None,
         "device_status": device.status.value,
+        "player_state": device.player_state,
+        "current_media_id": device.current_media_id,
     }
 
 
@@ -269,6 +337,721 @@ def admin_manifest_preview(
     }
 
 
+@router.get("/admin/wall/preview/{media_id}")
+def wall_media_preview(
+    media_id: str,
+    request: Request,
+    user: User = Depends(admin),
+    db: Session = Depends(get_db),
+):
+    """Aperçu d'un média actuellement diffusé sur un écran (mur VNC).
+
+    Contrairement à `/api/media/{id}/preview-file` (espace personnel isolé),
+    cet endpoint expose uniquement les médias **diffusés** (présents dans un
+    manifeste publié ou commandés via « Afficher ») — visible par tout
+    utilisateur connecté du back-office, sans contourner l'isolation des
+    bibliothèques privées.
+    """
+    media = db.get(Media, media_id)
+    if media is None:
+        raise HTTPException(status_code=404, detail="Média introuvable")
+    # Le média doit être en diffusion : présent dans un manifeste publié,
+    # en cours d'affichage sur un device (heartbeat), ou via « Afficher ».
+    in_manifest = db.scalar(
+        select(func.count())
+        .select_from(Manifest)
+        .where(Manifest.payload.like(f'%{media_id}%'))
+    )
+    on_screen = db.scalar(
+        select(func.count())
+        .select_from(Device)
+        .where(Device.current_media_id == media_id)
+    )
+    shown = db.scalar(
+        select(func.count())
+        .select_from(Command)
+        .where(
+            Command.type == CommandType.SHOW,
+            Command.payload.like(f'%{media_id}%'),
+        )
+    )
+    if not (in_manifest or on_screen or shown):
+        raise HTTPException(status_code=404, detail="Média non diffusé")
+
+    storage = build_storage(request.app.state.settings)
+    if media.kind in (MediaKind.PDF, MediaKind.OFFICE) and media.pages_json:
+        pages = json.loads(media.pages_json)
+        if pages:
+            return _serve_storage_file(storage, pages[0], "image/png")
+    return _serve_storage_file(storage, media.storage_path, media.mime_type)
+
+
+@router.get("/admin/wall/{device_id}/live")
+def wall_device_live(device_id: str, request: Request):
+    """Flux MJPEG « vrai direct » de ce que l'écran affiche.
+
+    Re-fabrique une image à partir du média en cours de lecture
+    (heartbeat du device) et la streame en multipart/x-mixed-replace :
+    le navigateur met à jour l'image sans code JS ni polling. L'état
+    ``current_media_id``/``player_state`` est relu à chaque frame — le
+    flux suit la diffusion en temps réel (changement de média, blank…).
+    Les vidéos sont pipées par un unique processus ffmpeg en temps réel
+    (flux MJPEG continu) plutôt qu'une frame extraite à la demande :
+    l'aperçu est fluide au lieu d'un diaporama ~2 i/s.
+    """
+    import asyncio
+
+    settings = request.app.state.settings
+    db_factory = request.app.state.session_factory
+
+    def _part(payload: bytes, mime: str) -> bytes:
+        return (
+            b"--elyonframe\r\n"
+            b"Content-Type: " + mime.encode() + b"\r\nContent-Length: "
+            + str(len(payload)).encode() + b"\r\n\r\n" + payload + b"\r\n"
+        )
+
+    async def generate():
+        # Pas d'en-tête initial : la première partie doit être une image,
+        # sinon certains navigateurs refusent de rendre le <img> MJPEG.
+        loop = asyncio.get_running_loop()
+        while True:
+            try:
+                video = await loop.run_in_executor(
+                    None, _live_video_state, db_factory, settings, device_id
+                )
+            except Exception:  # noqa: BLE001 — ne jamais casser le flux
+                video = None
+            if video is not None and _ffmpeg_available():
+                path, seek = video
+                sent = 0
+                try:
+                    async for jpeg in _video_mjpeg_parts(path, seek):
+                        yield _part(jpeg, "image/jpeg")
+                        sent += 1
+                        # Re-vérification ~0,7 s : si le média a changé
+                        # (nouveau « Afficher », arrêt, blank…), on coupe le pipe.
+                        if sent % 8 == 0:
+                            cur = await loop.run_in_executor(
+                                None, _live_video_state, db_factory, settings, device_id
+                            )
+                            if cur is None or cur[0] != path:
+                                break
+                except Exception:  # noqa: BLE001 — ne jamais casser le flux
+                    pass
+                if sent == 0:
+                    # ffmpeg n'a rien produit (fichier corrompu…) : éviter
+                    # une boucle chaude avant de réévaluer.
+                    await asyncio.sleep(0.5)
+                continue
+            try:
+                frame = await loop.run_in_executor(
+                    None, _render_live_frame, db_factory, settings, device_id
+                )
+            except Exception:  # noqa: BLE001 — ne jamais casser le flux
+                frame = None
+            if frame is None:
+                frame = _placeholder_png_bytes("Aperçu indisponible")
+                mime = "image/png"
+            else:
+                mime = _frame_types.get(device_id, "image/jpeg")
+            yield _part(frame, mime)
+            # GIF animé : on tient la partie le temps que l'animation se joue
+            # en boucle côté navigateur — une nouvelle partie trop fréquente
+            # relancerait l'animation à zéro et l'image resterait figée sur
+            # la première frame.
+            await asyncio.sleep(10.0 if mime == "image/gif" else 0.4)
+
+    from fastapi.responses import StreamingResponse
+
+    return StreamingResponse(
+        generate(),
+        media_type="multipart/x-mixed-replace; boundary=elyonframe",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _video_duration(path: Path) -> float | None:
+    """Durée de la vidéo (ffprobe), mise en cache par fichier."""
+    import subprocess
+
+    global _video_duration_cache
+    cached = _video_duration_cache.get(str(path))
+    if cached is not None:
+        return cached[0]
+    duration: float | None = None
+    try:
+        result = subprocess.run(  # noqa: S603
+            [
+                "ffprobe",
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=nw=1:nk=1",
+                str(path),
+            ],
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+        text = result.stdout.decode("ascii", "ignore").strip()
+        if result.returncode == 0 and text:
+            duration = float(text)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        duration = None
+    _video_duration_cache[str(path)] = (duration, time.monotonic())
+    return duration
+
+
+def _video_frame(rel_abs_path: Path, seek_seconds: float = 3.0) -> bytes | None:
+    """Extrait une image de la vidéo à la position de lecture donnée.
+
+    La position suit la lecture réelle (début de lecture + temps écoulé,
+    borné par la durée du fichier) : l'aperçu « vit » au lieu d'afficher une
+    frame figée. Cache ~1 s par (fichier, position entière) pour éviter de
+    décoder à chaque frame du flux MJPEG.
+    """
+    import subprocess
+    import time as _time
+
+    global _video_frame_cache
+    seek = max(0.0, float(seek_seconds))
+    duration = _video_duration(rel_abs_path)
+    if duration and duration > 1:
+        seek = seek % max(duration - 0.5, 0.5)
+    key = f"{rel_abs_path}:{int(seek)}"
+    cached = _video_frame_cache.get(key)
+    now = _time.monotonic()
+    if cached is not None and now - cached[1] < 1.0:
+        return cached[0]
+    try:
+        result = subprocess.run(  # noqa: S603
+            [
+                "ffmpeg",
+                "-ss", f"{seek:.3f}",
+                "-i", str(rel_abs_path),
+                "-frames:v", "1",
+                "-f", "image2",
+                "-vcodec", "mjpeg",
+                "-q:v", "5",
+                "-y",
+                "pipe:1",
+            ],
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+        frame = result.stdout if result.returncode == 0 and result.stdout else None
+    except (OSError, subprocess.TimeoutExpired):
+        frame = None
+    if len(_video_frame_cache) > 512:
+        _video_frame_cache.clear()
+    _video_frame_cache[key] = (frame, now)
+    return frame
+
+
+_video_frame_cache: dict[str, tuple[bytes | None, float]] = {}
+_video_duration_cache: dict[str, tuple[float | None, float]] = {}
+
+_ffmpeg_ok: bool | None = None
+
+
+def _ffmpeg_available() -> bool:
+    global _ffmpeg_ok
+    if _ffmpeg_ok is None:
+        import shutil
+
+        _ffmpeg_ok = shutil.which("ffmpeg") is not None
+    return _ffmpeg_ok
+
+
+def _find_player_marker(device: Device) -> tuple[Path, Path] | None:
+    """Data-dir du player contenant `screen-frame.json` (lab / même machine)."""
+    import os
+
+    roots: list[Path] = []
+    env_root = os.environ.get("ELYON_PLAYER_DATA_DIR")
+    if env_root:
+        roots.append(Path(env_root) / device.serial)
+    # Conventions du lab (run-local/run-hosted) + data_dir par défaut.
+    cwd = Path.cwd()
+    # cwd est typiquement <racine>/apps/api → racine = 2 niveaux au-dessus.
+    for base in (cwd.parents[1] / ".lab" if len(cwd.parents) > 1 else cwd / ".lab",
+                 cwd.parents[0] / ".lab" if cwd.parents else cwd / ".lab",
+                 cwd / ".lab", Path(".lab").resolve()):
+        # « emu-rpi-preview » → player-preview (aperçu), « emu-rpi-1 » → player-1.
+        suffix = device.serial.removeprefix("emu-rpi-")
+        for sub in (f"player-{device.serial[-1]}", f"player-{suffix}", device.serial):
+            roots.append(base / "hosted" / sub)
+            roots.append(base / "local" / sub)
+        roots.append(base / "qemu")
+    roots.append(Path("/var/lib/elyon-player"))
+    for root in roots:
+        candidate = root / "screen-frame.json"
+        if candidate.exists():
+            return root, candidate
+    return None
+
+
+def _live_video_state(
+    db_factory, settings, device_id: str
+) -> tuple[str, float] | None:
+    """Vidéo en cours de lecture ? → (chemin absolu, position) ou None.
+
+    Source de vérité prioritaire : le marqueur du player (`screen-frame.json`,
+    écrit au démarrage de chaque lecture — immédiat, sans attendre le
+    heartbeat de 30 s). Fallback : stockage serveur + suivi du moment où le
+    média est devenu « en cours » (devices distants, pas de marqueur local).
+    """
+    with db_factory() as db:
+        device = db.get(Device, device_id)
+        if device is None:
+            return None
+        # Un écran explicitement éteint prime sur un marqueur éventuellement
+        # périmé (le player ne réécrit pas son marqueur lors d'un blank).
+        if device.player_state == "blank":
+            return None
+        marker = _find_player_marker(device)
+        if marker is not None:
+            _, marker_file = marker
+            try:
+                info = json.loads(marker_file.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                info = {}
+            if info.get("video"):
+                video_path = info.get("path")
+                if video_path and Path(str(video_path)).exists():
+                    try:
+                        elapsed = max(0.0, time.time() - float(info.get("started_at")))
+                    except (TypeError, ValueError):
+                        elapsed = 0.0
+                    duration = _video_duration(Path(str(video_path)))
+                    # Marqueur périmé (vidéo terminée, item suivant pas encore
+                    # démarré) : on retombe sur l'état base de données.
+                    if not (duration and elapsed >= duration + 1.0):
+                        seek = elapsed
+                        if duration and duration > 1:
+                            seek = min(seek, duration - 0.5)
+                        return str(video_path), seek
+                else:
+                    return None  # fichier du player plus disponible
+            elif info:  # marqueur valide mais non vidéo → image/GIF à l'écran
+                return None
+        # Fallback : rendu côté serveur depuis le stockage.
+        if device.player_state != "playing":
+            return None
+        media = (
+            db.get(Media, device.current_media_id)
+            if device.current_media_id
+            else None
+        )
+        if media is None or media.kind != MediaKind.VIDEO:
+            return None
+        rel = media.storage_path
+        storage = build_storage(settings)
+        to_abs = getattr(storage, "_abs", None)
+        if to_abs is None:
+            return None
+        abs_path = Path(to_abs(rel))
+        if not abs_path.exists():
+            return None
+        now = time.monotonic()
+        tracked = _video_start.get(device.id)
+        if tracked is None or tracked[0] != media.id:
+            _video_start[device.id] = (media.id, now)
+            seek = 0.0
+        else:
+            seek = now - tracked[1]
+        return str(abs_path), seek
+
+
+async def _video_mjpeg_parts(path: str, start_seek: float):
+    """JPEG complets d'un flux MJPEG continu en temps réel.
+
+    Un unique processus ffmpeg décode la vidéo à vitesse native (`-re`) et
+    la pipe en MJPEG ; les frames sont découpées sur les bornes JPEG
+    (FFD8…FFD9). Sortie plafonnée à 15 i/s et redimensionnée à 640 px pour
+    garder l'aperçu léger sur le réseau.
+    """
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    duration = await loop.run_in_executor(None, _video_duration, Path(path))
+    seek = max(0.0, float(start_seek))
+    if duration and duration > 1:
+        # Borné à la fin du fichier : l'aperçu suit la lecture réelle.
+        seek = min(seek, duration - 0.5)
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-re", "-ss", f"{seek:.3f}", "-i", path,
+        "-an",
+        "-vf", "fps=15,scale='min(640,iw)':-2",
+        "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "5",
+        "pipe:1",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    buf = b""
+    try:
+        assert proc.stdout is not None
+        while True:
+            chunk = await proc.stdout.read(65536)
+            if not chunk:
+                break
+            buf += chunk
+            while True:
+                soi = buf.find(b"\xff\xd8")
+                if soi == -1:
+                    buf = b""
+                    break
+                eoi = buf.find(b"\xff\xd9", soi + 2)
+                if eoi == -1:
+                    if soi > 0:
+                        buf = buf[soi:]
+                    break
+                yield buf[soi : eoi + 2]
+                buf = buf[eoi + 2 :]
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+
+
+def _render_live_frame(db_factory, settings, device_id: str) -> bytes | None:
+    """Image JPEG de la lecture courante du device (thread worker).
+
+    Priorité à la **capture du player** (`screen-frame.jpg` écrite par le
+    moteur de lecture, même machine en lab) : c'est exactement ce qui est
+    affiché, y compris vidéos et contenus défaillants. Fallback : image du
+    média courant (frame ffmpeg pour les vidéos).
+    """
+    import io as _io
+    from pathlib import Path as _Path
+
+    from PIL import Image
+
+    with db_factory() as db:
+        device = db.get(Device, device_id)
+        if device is None:
+            return None
+        state = device.player_state
+        media = db.get(Media, device.current_media_id) if device.current_media_id else None
+        if state == "blank":
+            return _placeholder_png_bytes("Écran éteint")
+        if state != "playing" or media is None:
+            return _placeholder_png_bytes("Écran en attente")
+        storage = build_storage(settings)
+
+        # 1) Capture du player (rendu réel) — lab hébergé / même machine.
+        agent_frame = _player_frame(device, media)
+        if agent_frame is not None:
+            return agent_frame
+
+        # 2) Fallback : rendu côté serveur à partir du média courant.
+        rel = media.storage_path
+        if media.kind in (MediaKind.PDF, MediaKind.OFFICE) and media.pages_json:
+            pages = json.loads(media.pages_json)
+            if pages:
+                rel = pages[0]
+        if not storage.exists(rel):
+            return _placeholder_png_bytes("Fichier indisponible")
+        try:
+            if media.kind == MediaKind.VIDEO:
+                # LocalStorage expose _abs (chemin réel sur disque) — requis
+                # pour ffmpeg ; les backends distants retombent sur le
+                # placeholder.
+                to_abs = getattr(storage, "_abs", None)
+                if to_abs is None:
+                    return _placeholder_png_bytes("Vidéo en lecture")
+                abs_path = _Path(to_abs(rel))
+                # Sans horodatage du player : on suit la position depuis le
+                # moment où ce média est devenu « en cours » (côté serveur).
+                import time as _time
+
+                now = _time.monotonic()
+                tracked = _video_start.get(device.id)
+                if tracked is None or tracked[0] != media.id:
+                    _video_start[device.id] = (media.id, now)
+                    seek = 0.0
+                else:
+                    seek = now - tracked[1]
+                frame = _video_frame(abs_path, seek_seconds=seek)
+                if frame:
+                    return frame
+                return _placeholder_png_bytes("Vidéo en lecture")
+            with storage.open_read(rel) as f:
+                data = f.read()
+            img: Image.Image = Image.open(_io.BytesIO(data)).convert("RGB")
+            buf = _io.BytesIO()
+            img.save(buf, "JPEG", quality=70)
+            return buf.getvalue()
+        except Exception:  # noqa: BLE001
+            return _placeholder_png_bytes("Aperçu indisponible")
+
+
+def _player_frame(device: Device, media: Media) -> bytes | None:
+    """Capture écrite par le moteur de lecture (screen-frame.jpg), si dispo.
+
+    Le chemin du data-dir du player est déduit du serial (lab hébergé :
+    .lab/hosted/player-1) ou lu depuis l'environnement ELYON_PLAYER_DATA_DIR.
+    """
+    import time as _time
+
+    global _player_frame_cache
+    cache_key = device.id + ":" + (device.current_media_id or "")
+    cached = _player_frame_cache.get(cache_key)
+    now = _time.monotonic()
+    if cached is not None and now - cached[1] < 1.0:
+        return cached[0]
+
+    frame: bytes | None = None
+    marker = _find_player_marker(device)
+    if marker is not None:
+        root, marker_file = marker
+        try:
+            info = json.loads(marker_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            info = {}
+        frame_file = root / "screen-frame.jpg"
+        if info.get("video"):
+            # Vidéo : le player indique le fichier source ET l'heure de début
+            # de lecture → frame extraite à la position courante (aperçu vivant).
+            video_path = info.get("path")
+            if video_path and Path(str(video_path)).exists():
+                try:
+                    seek = max(0.0, _time.time() - float(info.get("started_at")))
+                except (TypeError, ValueError):
+                    seek = 3.0
+                frame = _video_frame(Path(str(video_path)), seek_seconds=seek)
+        elif frame_file.exists():
+            try:
+                frame = frame_file.read_bytes()
+            except OSError:
+                frame = None
+    if frame is not None:
+        # Un GIF copié tel quel est servi en image/gif (animation conservée) ;
+        # le type réel est renvoyé par _live_frame_type côté flux.
+        _frame_types[device.id] = (
+            "image/gif" if frame[:4] == b"GIF8" else "image/jpeg"
+        )
+    _player_frame_cache[cache_key] = (frame, now)
+    return frame
+
+
+_frame_types: dict[str, str] = {}
+
+
+_player_frame_cache: dict[str, tuple[bytes | None, float]] = {}
+
+# device_id → (media_id, monotonic_start) : position de lecture estimée pour
+# le rendu vidéo côté serveur (fallback sans capture du player).
+_video_start: dict[str, tuple[str, float]] = {}
+
+
+def _placeholder_png_bytes(text: str) -> bytes:
+    """Image de secours : fond sombre + texte (générée côté serveur)."""
+    import io as _io
+
+    from PIL import Image, ImageDraw
+
+    img = Image.new("RGB", (640, 360), (11, 18, 32))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([8, 8, 631, 351], outline=(51, 65, 85), width=2)
+    draw.text((320 - len(text) * 4, 172), text, fill=(148, 163, 184))
+    buf = _io.BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def _serve_storage_file(storage, rel_path: str, mime_type: str):
+    if not storage.exists(rel_path):
+        raise HTTPException(status_code=404, detail="Fichier manquant")
+    from fastapi.responses import Response as _Response
+
+    with storage.open_read(rel_path) as f:
+        data = f.read()
+    return _Response(content=data, media_type=mime_type)
+
+
+@router.get("/admin/wall")
+def admin_wall(
+    request: Request,
+    user: User = Depends(require_permission(Permission.DEVICE_VIEW)),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    """Mur d'écrans : état de lecture de chaque Raspberry (émulé ou réel)."""
+    settings = request.app.state.settings
+    now = dt.datetime.now(dt.UTC)
+    stmt = select(Device).order_by(Device.is_preview.desc(), Device.name)
+    if user.role != Role.SUPERADMIN:
+        stmt = stmt.where(Device.org_id == user.org_id)
+    items = []
+    for device in db.scalars(stmt):
+        media = db.get(Media, device.current_media_id) if device.current_media_id else None
+        items.append(
+            {
+                "device_id": device.id,
+                "name": device.name,
+                "serial": device.serial,
+                "is_preview": bool(device.is_preview),
+                "status": device.status.value,
+                "computed_status": _device_status(device, now, settings.offline_grace_seconds),
+                "player_state": device.player_state,
+                "current_media_id": device.current_media_id,
+                "current_media_name": media.name if media else None,
+                "current_media_kind": media.kind.value if media else None,
+                "last_seen_at": device.last_seen_at.isoformat() if device.last_seen_at else None,
+                "screen_id": device.screen.id if device.screen else None,
+            }
+        )
+    return items
+
+
+def _audit_names(db: Session, rows: Sequence[AuditLog]) -> dict[str, str]:
+    """Résout les identifiants techniques en noms lisibles (1 requête/classe)."""
+    from elyon_api.models import Playlist, Screen, Site, Team
+
+    user_ids = {r.user_id for r in rows if r.user_id}
+    device_ids = {r.resource_id for r in rows if r.resource_type == "device" and r.resource_id}
+    playlist_ids = {r.resource_id for r in rows if r.resource_type == "playlist" and r.resource_id}
+    site_ids = {r.resource_id for r in rows if r.resource_type == "site" and r.resource_id}
+    screen_ids = {r.resource_id for r in rows if r.resource_type == "screen" and r.resource_id}
+    team_ids = {r.resource_id for r in rows if r.resource_type == "team" and r.resource_id}
+    media_ids = {r.resource_id for r in rows if r.resource_type == "media" and r.resource_id}
+
+    names: dict[str, str] = {}
+    if user_ids:
+        for u in db.scalars(select(User).where(User.id.in_(user_ids))):
+            names[u.id] = u.full_name or u.email
+    if device_ids:
+        for d in db.scalars(select(Device).where(Device.id.in_(device_ids))):
+            names[d.id] = d.name
+    if playlist_ids:
+        for p in db.scalars(select(Playlist).where(Playlist.id.in_(playlist_ids))):
+            names[p.id] = p.name
+    if site_ids:
+        for site_row in db.scalars(select(Site).where(Site.id.in_(site_ids))):
+            names[site_row.id] = site_row.name
+    if screen_ids:
+        for screen_row in db.scalars(select(Screen).where(Screen.id.in_(screen_ids))):
+            names[screen_row.id] = screen_row.name
+    if team_ids:
+        for t in db.scalars(select(Team).where(Team.id.in_(team_ids))):
+            names[t.id] = t.name
+    if media_ids:
+        for m in db.scalars(select(Media).where(Media.id.in_(media_ids))):
+            names[m.id] = m.name
+    return names
+
+
+@router.get("/audit/logs")
+def list_audit_logs(
+    action: str | None = None,
+    resource_type: str | None = None,
+    user_id: str | None = None,
+    limit: int = 10,
+    offset: int = 0,
+    user: User = Depends(require_permission(Permission.AUDIT_VIEW)),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Journal d'audit paginé (défaut 10/page, max 100) + noms lisibles."""
+    page_size = min(max(limit, 1), 100)
+    stmt = select(AuditLog).order_by(AuditLog.created_at.desc())
+    if user.role != Role.SUPERADMIN:
+        stmt = stmt.where(AuditLog.org_id == user.org_id)
+    if action:
+        stmt = stmt.where(AuditLog.action == action)
+    if resource_type:
+        stmt = stmt.where(AuditLog.resource_type == resource_type)
+    if user_id:
+        stmt = stmt.where(AuditLog.user_id == user_id)
+    total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+    rows = db.scalars(stmt.offset(max(offset, 0)).limit(page_size)).all()
+    names = _audit_names(db, rows)
+    items = []
+    for a in rows:
+        item = AuditLogOut.model_validate(a)
+        item.resource_name = names.get(a.resource_id or "")
+        item.user_name = names.get(a.user_id or "")
+        items.append(item)
+    return {
+        "items": items,
+        "total": total,
+        "limit": page_size,
+        "offset": max(offset, 0),
+    }
+
+
+@router.get("/admin/playback/export")
+def export_playback(
+    device_id: str | None = None,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    user: User = Depends(require_permission(Permission.DEVICE_VIEW)),
+    db: Session = Depends(get_db),
+):
+    """Export CSV de la preuve de lecture (proof-of-play).
+
+    Filtres : `device_id`, `from_date`/`to_date` (ISO). Colonnes : horodatage,
+    appareil (nom), média (nom), état. Les noms arrivent du serveur : le CSV
+    neutralise les formules pour éviter l'injection dans les tableurs.
+    """
+    from elyon_api.models import Media as _Media
+    from elyon_api.models import PlaybackEvent as _PE
+
+    stmt = select(_PE).order_by(_PE.recorded_at.desc())
+    if user.role != Role.SUPERADMIN:
+        stmt = stmt.where(_PE.org_id == user.org_id)
+    if device_id:
+        stmt = stmt.where(_PE.device_id == device_id)
+    if from_date:
+        try:
+            stmt = stmt.where(_PE.recorded_at >= dt.datetime.fromisoformat(from_date))
+        except ValueError:
+            raise HTTPException(status_code=422, detail="from_date invalide") from None
+    if to_date:
+        try:
+            stmt = stmt.where(_PE.recorded_at <= dt.datetime.fromisoformat(to_date))
+        except ValueError:
+            raise HTTPException(status_code=422, detail="to_date invalide") from None
+
+    rows = db.scalars(stmt.limit(20000)).all()
+    device_ids = {r.device_id for r in rows}
+    device_names = {
+        d.id: d.name
+        for d in db.scalars(select(Device).where(Device.id.in_(device_ids)))
+    }
+    media_ids = {r.media_id for r in rows if r.media_id}
+    media_names = {
+        m.id: m.name
+        for m in db.scalars(select(_Media).where(_Media.id.in_(media_ids)))
+    }
+
+    def _csv_safe(value: object) -> str:
+        s = "" if value is None else str(value)
+        if s and s[0] in ("=", "+", "-", "@", "\t", "\r"):
+            return "'" + s
+        return s
+
+    lines = ["horodatage,appareil,media,etat"]
+    for r in rows:
+        lines.append(
+            ",".join(
+                _csv_safe(x)
+                for x in (
+                    r.recorded_at.isoformat(),
+                    device_names.get(r.device_id, r.device_id),
+                    media_names.get(r.media_id or "", r.media_id or ""),
+                    r.state,
+                )
+            )
+        )
+    return Response(
+        content="\n".join(lines).encode("utf-8"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="proof-of-play.csv"'},
+    )
+
+
 @router.get("/dashboard")
 def dashboard(
     request: Request,
@@ -283,7 +1066,33 @@ def dashboard(
         1 for d in devices if _device_status(d, now, settings.offline_grace_seconds) == "online"
     )
     pending = sum(1 for d in devices if d.status == DeviceStatus.PENDING)
-    media_count = db.scalar(select(func.count()).select_from(Media))
+    media_filter = [] if user.role == Role.SUPERADMIN else [Media.org_id == user.org_id]
+    media_count = db.scalar(select(func.count()).select_from(Media).where(*media_filter))
+    media_ready = db.scalar(
+        select(func.count())
+        .select_from(Media)
+        .where(*media_filter, Media.status == MediaStatus.READY)
+    )
+    media_bytes = db.scalar(
+        select(func.coalesce(func.sum(Media.size_bytes), 0))
+        .select_from(Media)
+        .where(*media_filter)
+    )
+    events_filter = [] if user.role == Role.SUPERADMIN else [Event.org_id == user.org_id]
+    events_24h = db.scalar(
+        select(func.count())
+        .select_from(Event)
+        .where(*events_filter, Event.created_at >= now - dt.timedelta(hours=24))
+    )
+    events_warning_24h = db.scalar(
+        select(func.count())
+        .select_from(Event)
+        .where(
+            *events_filter,
+            Event.created_at >= now - dt.timedelta(hours=24),
+            Event.level.in_([EventLevel.WARNING, EventLevel.ERROR]),
+        )
+    )
     events_stmt = select(Event).order_by(Event.created_at.desc()).limit(8)
     if user.role != Role.SUPERADMIN:
         events_stmt = events_stmt.where(Event.org_id == user.org_id)
@@ -291,8 +1100,13 @@ def dashboard(
     return {
         "devices_total": len(devices),
         "devices_online": online,
+        "devices_offline": max(len(devices) - online, 0),
         "devices_pending": pending,
         "media_count": media_count or 0,
+        "media_ready": media_ready or 0,
+        "media_bytes": media_bytes or 0,
+        "events_24h": events_24h or 0,
+        "events_warning_24h": events_warning_24h or 0,
         "recent_events": recent_events,
         "server_time": now.isoformat(),
     }

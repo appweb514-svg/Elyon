@@ -1,9 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { api, formatDate } from "@/lib/api";
+import { ApiError, api, formatBytes, formatDate } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -13,16 +13,25 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
+import { TvFrame } from "@/components/tv-frame";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+  LayoutEditor,
+  type ScreenLayout,
+} from "@/components/layout-editor";
+import { useDragOrder } from "@/lib/use-drag-order";
+import { WidgetBar, type Widget } from "@/components/widget-bar";
+import {
+  ArrowDown,
+  ArrowUp,
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  GripVertical,
+  Loader2,
+} from "lucide-react";
 
 type Device = {
   id: string;
@@ -32,136 +41,175 @@ type Device = {
   computed_status?: string | null;
   site_id: string | null;
   screen_id: string | null;
+  is_preview?: boolean;
   last_seen_at: string | null;
+  player_state?: string | null;
+  current_media_id?: string | null;
+  uptime_seconds?: number | null;
+  load_avg?: number | null;
+  memory_percent?: number | null;
+  cpu_percent?: number | null;
+  storage_free_bytes?: number | null;
+  lan_ip?: string | null;
+  wifi_ssid?: string | null;
   created_at: string;
 };
 
-type AdminStatus = {
+type WallFrame = {
   device_id: string;
-  status: string;
-  computed_status: string;
-  last_seen_at: string | null;
-  screen_id: string | null;
-  manifest_version: number | null;
-};
-
-type HeartbeatAdmin = {
-  status: string;
-  last_seen_at: string | null;
-  device_status: string;
-};
-
-type ManifestPreview = {
-  version: number;
-  payload: string;
-  signature: string;
-  published_at: string;
-};
-
-type Command = {
-  id: string;
-  type: string;
-  payload: string | null;
-  status: string;
-  created_at: string;
-};
-
-type Schedule = {
-  id: string;
-  site_id: string;
-  playlist_id: string;
   name: string;
-  start_at: string;
-  end_at: string;
-  priority: number;
-  is_active: boolean;
+  computed_status: string;
+  player_state: string | null;
+  current_media_id: string | null;
+  current_media_name: string | null;
+  current_media_kind: string | null;
 };
 
-type Playlist = { id: string; name: string };
-type MediaItem = { id: string; name: string; kind: string };
+type Screen = {
+  id: string;
+  name: string;
+  layout?: ScreenLayout | null;
+  widgets?: Widget[] | null;
+};
 
-const COMMAND_TYPES = ["reboot", "resync", "blank", "unblank", "capture"] as const;
+type Media = { id: string; name: string; kind: string };
+type Playlist = { id: string; name: string };
+type PlaylistItem = {
+  id: string;
+  media_id: string;
+  position: number;
+  duration_seconds: number | null;
+};
+type PlaylistDetail = Playlist & { items: PlaylistItem[] };
+type Command = { id: string; type: string; payload: string | null; status: string; created_at: string };
+type Schedule = { id: string; playlist_id: string; name: string; start_at: string; end_at: string; priority: number; is_active: boolean; device_id?: string | null; excluded_for_this_device?: boolean };
+type ManifestPreview = { version: number; payload: string; signature: string; published_at: string };
+
+function formatUptime(totalSeconds: number): string {
+  const d = Math.floor(totalSeconds / 86400);
+  const h = Math.floor((totalSeconds % 86400) / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  if (d > 0) return `${d} j ${h} h`;
+  if (h > 0) return `${h} h ${m} min`;
+  return `${m} min`;
+}
+
+function commandLabel(c: Command): string {
+  let mediaName: string | null = null;
+  if (c.payload) {
+    try {
+      const parsed = JSON.parse(c.payload) as { name?: string };
+      mediaName = parsed.name ?? null;
+    } catch {
+      mediaName = null;
+    }
+  }
+  if (c.type === "show") return mediaName ? `Afficher « ${mediaName} »` : "Afficher un média";
+  if (c.type === "stop_show") return mediaName ? `Arrêter « ${mediaName} »` : "Arrêt de la diffusion";
+  const labels: Record<string, string> = {
+    resync: "Mise à jour du contenu",
+    reboot: "Redémarrage",
+    blank: "Écran éteint",
+    unblank: "Écran rallumé",
+    capture: "Capture d'écran",
+  };
+  return labels[c.type] ?? c.type;
+}
 
 const STATUS_LABEL: Record<string, string> = {
-  pending: "en attente",
-  approved: "approuvé",
-  online: "en ligne",
-  offline: "hors ligne",
-  syncing: "synchronisation",
-  maintenance: "maintenance",
-  disabled: "désactivé",
-  blocked: "bloqué",
+  pending: "En attente d'approbation",
+  approved: "Prêt (éteint ou jamais connecté)",
+  online: "En ligne",
+  offline: "Hors ligne",
+  syncing: "En cours de mise à jour",
+  maintenance: "En maintenance",
+  disabled: "Désactivé",
+  blocked: "Bloqué",
+};
+
+const STATE_LABEL: Record<string, string> = {
+  playing: "Diffuse un contenu",
+  idle: "Écran en attente (aucun contenu programmé)",
+  blank: "Écran volontairement éteint",
 };
 
 function statusVariant(status: string): "success" | "warning" | "destructive" | "secondary" {
-  if (status === "online" || status === "approved") return "success";
+  if (status === "online") return "success";
   if (status === "pending" || status === "syncing") return "warning";
   if (status === "blocked" || status === "disabled") return "destructive";
-  if (status === "maintenance") return "secondary";
-  if (status === "offline") return "secondary";
   return "secondary";
-}
-
-function parseManifest(
-  preview: ManifestPreview | null
-): { blocks: unknown[]; media: unknown[]; published_at: string | null } | null {
-  if (!preview) return null;
-  try {
-    const payload = JSON.parse(preview.payload) as Record<string, unknown>;
-    return {
-      blocks: (payload.blocks as unknown[]) ?? [],
-      media: (payload.media as unknown[]) ?? [],
-      published_at: (payload.published_at as string) ?? preview.published_at,
-    };
-  } catch {
-    return null;
-  }
 }
 
 export default function DeviceDetailPage() {
   const params = useParams<{ id: string }>();
   const deviceId = params.id;
   const [device, setDevice] = useState<Device | null>(null);
-  const [adminStatus, setAdminStatus] = useState<AdminStatus | null>(null);
-  const [heartbeat, setHeartbeat] = useState<HeartbeatAdmin | null>(null);
+  const [wall, setWall] = useState<WallFrame | null>(null);
   const [commands, setCommands] = useState<Command[]>([]);
-  const [manifest, setManifest] = useState<ManifestPreview | null>(null);
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
-  const [mediaById, setMediaById] = useState<Record<string, MediaItem>>({});
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [commandType, setCommandType] = useState<string>("resync");
   const [assignPlaylist, setAssignPlaylist] = useState<string>("");
-  const [tab, setTab] = useState<"supervision" | "contenu" | "planning">("supervision");
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [expandedPlaylist, setExpandedPlaylist] = useState<PlaylistDetail | null>(null);
+  const [mediaList, setMediaList] = useState<Media[]>([]);
+  const [selectedMedia, setSelectedMedia] = useState("");
+  const [itemDuration, setItemDuration] = useState("10");
+  const [editingBusy, setEditingBusy] = useState(false);
+  const [tab, setTab] = useState<"live" | "contenu" | "disposition">("live");
+  const [layout, setLayout] = useState<ScreenLayout | null>(null);
+  const [savingLayout, setSavingLayout] = useState(false);
+  const [widgets, setWidgets] = useState<Widget[]>([]);
+  const [savedWidgets, setSavedWidgets] = useState<Widget[]>([]);
+  const [savingWidgets, setSavingWidgets] = useState(false);
+  const [widgetOpenId, setWidgetOpenId] = useState<string | null>(null);
+  // Gel du rechargement pendant l'édition (widgets OU disposition) : la ref
+  // est lue à l'intérieur du callback, sans dépendre des closures du timer.
+  const editingRef = useRef(false);
+  useEffect(() => {
+    editingRef.current = widgetOpenId !== null || savingLayout || savingWidgets;
+  }, [widgetOpenId, savingLayout, savingWidgets]);
+  const liveKey = useRef(0);
 
   const reload = useCallback(async () => {
     try {
       const dev = await api.get<Device>(`/api/devices/${deviceId}`);
       setDevice(dev);
-      // Endpoints admin — accessibles à l'utilisateur (pas au device Bearer)
-      const [status, hb, cmds, mf] = await Promise.all([
-        api.get<AdminStatus>(`/api/admin/devices/${deviceId}/status`).catch(() => null),
-        api.get<HeartbeatAdmin>(`/api/admin/devices/${deviceId}/heartbeat`).catch(() => null),
+      const [frame, cmds] = await Promise.all([
+        api.get<WallFrame[]>("/api/admin/wall")
+          .then((frames) => frames.find((f) => f.device_id === deviceId) ?? null)
+          .catch(() => null),
         api.get<Command[]>(`/api/admin/devices/${deviceId}/commands`).catch(() => [] as Command[]),
-        api.get<ManifestPreview>(`/api/admin/devices/${deviceId}/manifest`).catch(() => null),
       ]);
-      setAdminStatus(status);
-      setHeartbeat(hb);
+      setWall(frame);
       setCommands(cmds as Command[]);
-      setManifest(mf);
-      // Contenu/Planning du device (site)
+      if (dev.screen_id) {
+        const sites = await api.get<{ id: string }[]>("/api/sites").catch(() => []);
+        for (const site of sites as { id: string }[]) {
+          const screens = await api
+            .get<Screen[]>(`/api/sites/${site.id}/screens`)
+            .catch(() => [] as Screen[]);
+          const found = (screens as Screen[]).find((s) => s.id === dev.screen_id);
+          if (found) {
+            if (!editingRef.current) {
+              setLayout(found.layout ?? null);
+              setWidgets((found.widgets ?? []) as Widget[]);
+              setSavedWidgets((found.widgets ?? []) as Widget[]);
+            }
+            break;
+          }
+        }
+      }
       if (dev.site_id) {
         const [scheds, pls] = await Promise.all([
-          api.get<Schedule[]>(`/api/schedules?site_id=${dev.site_id}`).catch(() => [] as Schedule[]),
+          api.get<Schedule[]>(`/api/schedules?site_id=${dev.site_id}&device_id=${dev.id}`).catch(() => [] as Schedule[]),
           api.get<Playlist[]>("/api/playlists").catch(() => [] as Playlist[]),
         ]);
-        setSchedules(scheds as Schedule[]);
-        setPlaylists(pls as Playlist[]);
-        const media = await api.get<MediaItem[]>("/api/media").catch(() => [] as MediaItem[]);
-        const byId: Record<string, MediaItem> = {};
-        for (const m of media as MediaItem[]) byId[m.id] = m;
-        setMediaById(byId);
+        if (!editingRef.current) {
+          setSchedules(scheds as Schedule[]);
+          setPlaylists(pls as Playlist[]);
+        }
       }
       setError(null);
     } catch (err) {
@@ -171,12 +219,32 @@ export default function DeviceDetailPage() {
 
   useEffect(() => {
     reload();
-  }, [reload]);
+    const timer = setInterval(() => {
+      void reload();
+    }, 5000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deviceId]);
 
-  async function sendCommand() {
+  // Le flux MJPEG est reconnecté quand le média affiché change.
+  const liveSrc = `/api/admin/wall/${deviceId}/live`;
+  const currentMediaKey = wall?.current_media_id ?? "none";
+  const [liveBust, setLiveBust] = useState(0);
+  useEffect(() => {
+    liveKey.current += 1;
+    setLiveBust((b) => b + 1);
+  }, [currentMediaKey]);
+
+  async function stopShow() {
     try {
-      await api.post(`/api/devices/${deviceId}/commands`, { type: commandType });
-      setNotice(`Commande « ${commandType} » envoyée.`);
+      if (wall?.current_media_id) {
+        await api.post(`/api/media/${wall.current_media_id}/stop-show`, {
+          device_id: deviceId,
+        });
+      } else {
+        await api.post(`/api/devices/${deviceId}/commands`, { type: "stop_show" });
+      }
+      setNotice("Arrêt de la diffusion envoyé : retour au contenu programmé.");
       await reload();
     } catch (err) {
       setError(String((err as Error).message ?? err));
@@ -186,56 +254,318 @@ export default function DeviceDetailPage() {
   async function publish() {
     try {
       const mf = await api.post<ManifestPreview>(`/api/devices/${deviceId}/publish`);
-      setNotice(`Publication effectuée (version ${mf.version}).`);
+      setNotice(`Contenu envoyé à l'écran (version ${mf.version}).`);
       await reload();
     } catch (err) {
       setError(String((err as Error).message ?? err));
     }
   }
 
-  async function resync() {
-    try {
-      await api.post(`/api/devices/${deviceId}/commands`, { type: "resync" });
-      const mf = await api.post<ManifestPreview>(`/api/devices/${deviceId}/publish`);
-      setNotice(`Re-synchronisation : commande resync + manifeste v${mf.version}.`);
-      await reload();
-    } catch (err) {
-      setError(String((err as Error).message ?? err));
+  // Copie par-device : la playliste est dupliquée pour cet écran afin que ses
+  // modifications (ajouts, retraits, ordre) ne concernent QUE cet appareil —
+  // l'originale et les autres écrans restent intacts.
+  async function forkPlaylistForDevice(sourceId: string): Promise<Playlist> {
+    if (!device) throw new Error("Appareil inconnu");
+    const source = await api.get<PlaylistDetail>(`/api/playlists/${sourceId}`);
+    const baseName = `${source.name} · ${device.name}`;
+    let name = baseName;
+    let suffix = 2;
+    let copy: Playlist | null = null;
+    while (copy === null) {
+      try {
+        copy = await api.post<Playlist>("/api/playlists", { name });
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 409) {
+          name = `${baseName} (${suffix++})`;
+          continue;
+        }
+        throw err;
+      }
     }
+    for (const item of source.items) {
+      await api.post(`/api/playlists/${copy.id}/items`, {
+        media_id: item.media_id,
+        duration_seconds: item.duration_seconds ?? undefined,
+      });
+    }
+    return copy;
   }
 
   async function assignPlaylistToScreen() {
-    if (!assignPlaylist || !device?.screen_id) {
-      setError("Device non rattaché à un écran — créer/assigner d'abord.");
-      return;
-    }
-    // La programmation se fait via un planning : on crée un planning qui lie playlist + site.
-    if (!device.site_id) {
-      setError("Device sans site.");
+    if (!assignPlaylist || !device?.site_id) {
+      setError("Appareil sans site — rattachez-le d'abord à un site.");
       return;
     }
     try {
+      const copy = await forkPlaylistForDevice(assignPlaylist);
       await api.post("/api/schedules", {
         site_id: device.site_id,
-        playlist_id: assignPlaylist,
-        name: `Programmation ${playlists.find((p) => p.id === assignPlaylist)?.name ?? assignPlaylist}`,
+        playlist_id: copy.id,
+        name: copy.name,
         start_at: new Date().toISOString(),
         end_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
         priority: 0,
+        device_id: device.id,
       });
-      setNotice("Playlist affectée (planning créé). Publier pour générer le manifeste.");
+      setAssignPlaylist("");
+      await publish();
+      setNotice(
+        "Copie de la playlist créée pour cet écran : personnalisez-la sans toucher à l'originale."
+      );
       await reload();
     } catch (err) {
       setError(String((err as Error).message ?? err));
     }
   }
+
+  async function toggleExpand(s: Schedule) {
+    if (expandedId === s.id) {
+      setExpandedId(null);
+      setExpandedPlaylist(null);
+      return;
+    }
+    if (!device) return;
+    setEditingBusy(true);
+    try {
+      const [detail, media] = await Promise.all([
+        api.get<PlaylistDetail>(`/api/playlists/${s.playlist_id}`),
+        api.get<Media[]>("/api/media"),
+      ]);
+      setExpandedPlaylist(detail);
+      setMediaList(media as Media[]);
+      setExpandedId(s.id);
+    } catch (err) {
+      setError(String((err as Error).message ?? err));
+    } finally {
+      setEditingBusy(false);
+    }
+  }
+
+  // Duplique une playlist partagée (« tous les écrans du site ») en copie
+  // dédiée à cet écran, avec un planning ciblant l'appareil placé AU-DESSUS
+  // de l'original : ici la copie prime, les autres écrans gardent l'originale.
+  async function duplicateForDevice(s: Schedule) {
+    if (!device?.site_id) return;
+    setEditingBusy(true);
+    try {
+      const copy = await forkPlaylistForDevice(s.playlist_id);
+      const created = await api.post<Schedule>("/api/schedules", {
+        site_id: device.site_id,
+        playlist_id: copy.id,
+        name: copy.name,
+        start_at: s.start_at,
+        end_at: s.end_at,
+        priority: s.priority,
+        device_id: device.id,
+      });
+      const fresh = await api.get<Schedule[]>(`/api/schedules?site_id=${device.site_id}`);
+      const siteOrder = [...(fresh as Schedule[])]
+        .sort((a, b) => b.priority - a.priority || a.id.localeCompare(b.id))
+        .map((x) => x.id);
+      const idx = siteOrder.indexOf(s.id);
+      siteOrder.splice(idx === -1 ? siteOrder.length : idx, 0, created.id);
+      await api.post(`/api/sites/${device.site_id}/schedules/reorder`, siteOrder);
+      const detail = await api.get<PlaylistDetail>(`/api/playlists/${copy.id}`);
+      setExpandedPlaylist(detail);
+      setExpandedId(created.id);
+      setNotice(
+        "Copie créée pour cet écran : elle prime sur l'original ici, les autres écrans conservent le contenu partagé."
+      );
+      await reload();
+    } catch (err) {
+      setError(String((err as Error).message ?? err));
+    } finally {
+      setEditingBusy(false);
+    }
+  }
+
+  async function addItemToExpanded() {
+    if (!expandedPlaylist || !selectedMedia) return;
+    setEditingBusy(true);
+    try {
+      const seconds = Number.parseInt(itemDuration, 10);
+      const updated = await api.post<PlaylistDetail>(
+        `/api/playlists/${expandedPlaylist.id}/items`,
+        {
+          media_id: selectedMedia,
+          duration_seconds: Number.isNaN(seconds) || seconds < 1 ? null : seconds,
+        }
+      );
+      setExpandedPlaylist(updated);
+      setSelectedMedia("");
+      await publish();
+    } catch (err) {
+      setError(String((err as Error).message ?? err));
+    } finally {
+      setEditingBusy(false);
+    }
+  }
+
+  async function removeItemFromExpanded(item: PlaylistItem) {
+    if (!expandedPlaylist) return;
+    setEditingBusy(true);
+    try {
+      await api.del(`/api/playlists/${expandedPlaylist.id}/items/${item.id}`);
+      const detail = await api.get<PlaylistDetail>(`/api/playlists/${expandedPlaylist.id}`);
+      setExpandedPlaylist(detail);
+      await publish();
+    } catch (err) {
+      setError(String((err as Error).message ?? err));
+    } finally {
+      setEditingBusy(false);
+    }
+  }
+
+  async function moveItemInExpanded(item: PlaylistItem, direction: -1 | 1) {
+    if (!expandedPlaylist) return;
+    const ids = [...expandedPlaylist.items]
+      .sort((a, b) => a.position - b.position)
+      .map((i) => i.id);
+    const index = ids.indexOf(item.id);
+    const target = index + direction;
+    if (target < 0 || target >= ids.length) return;
+    [ids[index], ids[target]] = [ids[target], ids[index]];
+    setEditingBusy(true);
+    try {
+      const updated = await api.post<PlaylistDetail>(
+        `/api/playlists/${expandedPlaylist.id}/reorder`,
+        ids
+      );
+      setExpandedPlaylist(updated);
+      await publish();
+    } catch (err) {
+      setError(String((err as Error).message ?? err));
+    } finally {
+      setEditingBusy(false);
+    }
+  }
+
+  async function saveLayout() {
+    if (!device?.screen_id) return;
+    setSavingLayout(true);
+    try {
+      await api.patch(`/api/screens/${device.screen_id}`, {
+        layout: layout ?? { mode: "fullscreen", zones: [] },
+      });
+      await publish();
+      setNotice("Disposition enregistrée et envoyée à l'écran.");
+      await reload();
+    } catch (err) {
+      setError(String((err as Error).message ?? err));
+    } finally {
+      setSavingLayout(false);
+    }
+  }
+
+  async function toggleSchedule(s: Schedule) {
+    if (!device) return;
+    const shared = !s.device_id;
+    const hiddenHere = Boolean(s.excluded_for_this_device);
+    try {
+      if (shared) {
+        // Planning partagé : on ne touche PAS à l'original (les autres écrans
+        // le gardent) — on masque/réaffiche uniquement sur CET écran.
+        if (hiddenHere) {
+          await api.del(`/api/schedules/${s.id}/exclusions/${device.id}`);
+          setNotice("Contenu réaffiché sur cet écran (les autres écrans n'ont pas bougé).");
+        } else {
+          await api.post(`/api/schedules/${s.id}/exclusions`, { device_id: device.id });
+          setNotice("Contenu masqué sur cet écran uniquement — les autres écrans le diffusent toujours.");
+        }
+      } else {
+        await api.patch(`/api/schedules/${s.id}`, { is_active: !s.is_active });
+        setNotice(
+          s.is_active
+            ? "Contenu désactivé : il quitte l'écran au prochain cycle."
+            : "Contenu réactivé et envoyé à l'écran."
+        );
+      }
+      await reload();
+    } catch (err) {
+      setError(String((err as Error).message ?? err));
+    }
+  }
+
+  async function removeSchedule(s: Schedule) {
+    if (!device) return;
+    if (!window.confirm("Supprimer définitivement cette programmation ?")) return;
+    try {
+      await api.del(`/api/schedules/${s.id}`);
+      setNotice("Programmation supprimée et écrans mis à jour.");
+      await reload();
+    } catch (err) {
+      setError(String((err as Error).message ?? err));
+    }
+  }
+
+  const widgetsChanged = JSON.stringify(widgets) !== JSON.stringify(savedWidgets);
+
+  async function saveWidgets() {
+    if (!device?.screen_id) return;
+    setSavingWidgets(true);
+    try {
+      await api.patch(`/api/screens/${device.screen_id}`, {
+        widgets: widgets.map((w) => ({
+          type: w.type,
+          position: w.position,
+          visible: w.visible,
+          params: w.params,
+        })),
+      });
+      setSavedWidgets(widgets);
+      setWidgetOpenId(null);
+      await publish();
+      setNotice("Widgets enregistrés et affichés sur l'écran.");
+      await reload();
+    } catch (err) {
+      setError(String((err as Error).message ?? err));
+    } finally {
+      setSavingWidgets(false);
+    }
+  }
+
+  // Seuls les contenus qui jouent réellement sur CET écran : programmations
+  // ciblées sur l'appareil + programmations « tout le site » (device_id nul).
+  const currentDeviceId = device?.id;
+  const deviceSchedules = !currentDeviceId
+    ? []
+    : schedules.filter((s) => !s.device_id || s.device_id === currentDeviceId);
+  const orderedSchedules = [...deviceSchedules]
+    .sort((a, b) => b.priority - a.priority || a.id.localeCompare(b.id));
+  const sortedExpandedItems = expandedPlaylist
+    ? [...expandedPlaylist.items].sort((a, b) => a.position - b.position)
+    : [];
+  const { itemProps, overId } = useDragOrder<Schedule>(
+    orderedSchedules,
+    (s) => s.id,
+    (next) => {
+      void (async () => {
+        if (!device?.site_id) return;
+        try {
+          // L'API exige la liste COMPLÈTE des plannings du site : on réordonne
+          // ceux affichés puis on rajoute les autres (autres écrans) dans leur
+          // ordre courant.
+          const hiddenIds = schedules
+            .filter((s) => s.device_id && s.device_id !== device.id)
+            .map((s) => s.id);
+          const ids = [...next.map((s) => s.id), ...hiddenIds];
+          await api.post<Schedule[]>(`/api/sites/${device.site_id}/schedules/reorder`, ids);
+          setNotice("Priorités mises à jour et envoyées aux écrans.");
+          await reload();
+        } catch (err) {
+          setError(String((err as Error).message ?? err));
+        }
+      })();
+    }
+  );
+
+  const shown = device?.computed_status ?? device?.status ?? "";
+  const isShowingDirect = wall?.player_state === "playing" && Boolean(wall?.current_media_id);
 
   if (error && !device) {
     return (
       <div className="space-y-2">
-        <Link href="/devices" className="text-sm text-muted-foreground hover:underline">
-          ← Appareils
-        </Link>
+        <Link href="/devices" className="text-sm text-muted-foreground hover:underline">← Appareils</Link>
         <p className="text-sm text-destructive">{error}</p>
       </div>
     );
@@ -244,150 +574,194 @@ export default function DeviceDetailPage() {
     return <p className="text-sm text-muted-foreground">Chargement…</p>;
   }
 
-  const shown = device.computed_status ?? device.status;
-  const parsedManifest = parseManifest(manifest);
-
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <Link href="/devices" className="text-sm text-muted-foreground hover:underline">
-            ← Appareils
-          </Link>
+          <Link href="/devices" className="text-sm text-muted-foreground hover:underline">← Appareils</Link>
           <h1 className="text-2xl font-bold">{device.name}</h1>
-          <p className="text-sm text-muted-foreground">
-            Série {device.serial} · <Badge variant={statusVariant(shown)}>{STATUS_LABEL[shown] ?? shown}</Badge>{" "}
-            {adminStatus?.manifest_version != null && (
-              <span className="ml-2 text-xs">manifeste v{adminStatus.manifest_version}</span>
-            )}
+          <p className="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+            <Badge variant={statusVariant(shown)}>{STATUS_LABEL[shown] ?? shown}</Badge>
+            <span>{STATE_LABEL[wall?.player_state ?? ""] ?? "État inconnu"}</span>
+            <span>· vu le {formatDate(device.last_seen_at)}</span>
           </p>
         </div>
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={resync}>
-            Re-synchroniser
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button variant="outline" onClick={async () => {
+            try {
+              await api.post(`/api/devices/${deviceId}/commands`, { type: "resync" });
+              setNotice("Mise à jour forcée envoyée.");
+              await reload();
+            } catch (err) {
+              setError(String((err as Error).message ?? err));
+            }
+          }}>
+            Forcer la mise à jour
           </Button>
-          <Button onClick={publish}>Publier maintenant</Button>
+          <Button onClick={publish}>Envoyer le contenu</Button>
         </div>
       </div>
 
       {error && <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>}
       {notice && <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{notice}</p>}
 
-      <div className="flex gap-2 border-b pb-2">
+      <div className="flex flex-wrap gap-2 border-b pb-2">
         {(
           [
-            ["supervision", "Supervision"],
-            ["contenu", "Contenu diffusé"],
-            ["planning", "Planning"],
+            ["live", "Aperçu en direct"],
+            ["contenu", "Contenu & priorités"],
+            ["disposition", "Disposition de l'écran"],
           ] as const
         ).map(([key, label]) => (
-          <Button
-            key={key}
-            variant={tab === key ? "default" : "ghost"}
-            size="sm"
-            onClick={() => setTab(key)}
-          >
+          <Button key={key} variant={tab === key ? "default" : "ghost"} size="sm" onClick={() => setTab(key)}>
             {label}
           </Button>
         ))}
       </div>
 
-      {tab === "supervision" && (
-        <div className="grid gap-4 md:grid-cols-2">
-          <Card>
+      {tab === "live" && (
+        <div className="grid gap-4 lg:grid-cols-3">
+          <Card className="lg:col-span-2">
             <CardHeader>
-              <CardTitle>État</CardTitle>
-              <CardDescription>Dernier contact : {formatDate(device.last_seen_at)}</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-1 text-sm">
-              <p>
-                Statut calculé : <strong>{adminStatus?.computed_status ?? shown}</strong>
-              </p>
-              <p>
-                Statut brut : <strong>{device.status}</strong>
-              </p>
-              <p>
-                Dernier heartbeat : <strong>{heartbeat?.last_seen_at ? formatDate(heartbeat.last_seen_at) : "—"}</strong>
-              </p>
-              <p>
-                Écran : <strong>{device.screen_id ?? "—"}</strong>
-              </p>
-              <p>
-                Version manifeste : <strong>{adminStatus?.manifest_version ?? "—"}</strong>
-              </p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>Envoyer une commande</CardTitle>
-              <CardDescription>reboot, resync, blank/unblank, capture.</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="space-y-2">
-                <Label htmlFor="command-type">Type</Label>
-                <Select
-                  id="command-type"
-                  value={commandType}
-                  onChange={(e) => setCommandType(e.target.value)}
-                >
-                  {COMMAND_TYPES.map((type) => (
-                    <option key={type} value={type}>
-                      {type}
-                    </option>
-                  ))}
-                </Select>
-              </div>
-              <Button onClick={sendCommand}>Envoyer</Button>
-            </CardContent>
-          </Card>
-
-          <Card className="md:col-span-2">
-            <CardHeader>
-              <CardTitle>Historique des commandes</CardTitle>
+              <CardTitle>Ce que l&apos;écran affiche maintenant</CardTitle>
+              <CardDescription>
+                Image en direct (flux vidéo continu, sans rechargement).
+              </CardDescription>
             </CardHeader>
             <CardContent>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Horodatage</TableHead>
-                    <TableHead>Type</TableHead>
-                    <TableHead>Statut</TableHead>
-                    <TableHead>Payload</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {commands.map((command) => (
-                    <TableRow key={command.id}>
-                      <TableCell className="whitespace-nowrap">{formatDate(command.created_at)}</TableCell>
-                      <TableCell>{command.type}</TableCell>
-                      <TableCell>
-                        <Badge
-                          variant={
-                            command.status === "acked"
-                              ? "success"
-                              : command.status === "error" || command.status === "failed"
-                                ? "destructive"
-                                : "secondary"
-                          }
-                        >
-                          {command.status}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="max-w-48 truncate">{command.payload ?? "—"}</TableCell>
-                    </TableRow>
-                  ))}
-                  {commands.length === 0 && (
-                    <TableRow>
-                      <TableCell colSpan={4} className="text-muted-foreground">
-                        Aucune commande envoyée.
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </TableBody>
-              </Table>
+              <TvFrame label={wall?.computed_status === "online" ? "live" : "off"}>
+                {/* Flux MJPEG : le navigateur met à jour l'image tout seul,
+                    comme un vrai retour vidéo. La clé force la reconnexion
+                    quand le média affiché change. */}
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  key={liveBust}
+                  src={liveSrc}
+                  alt={wall?.current_media_name ?? "aperçu écran"}
+                  className="h-full w-full object-contain"
+                />
+              </TvFrame>
+              {isShowingDirect && wall?.current_media_name && (
+                <div className="mx-auto mt-4 flex max-w-2xl flex-wrap items-center justify-between gap-2 rounded-lg bg-muted/60 px-3 py-2">
+                  <div className="text-sm">
+                    Diffusion directe en cours : <strong>{wall.current_media_name}</strong>
+                  </div>
+                  <Button size="sm" variant="destructive" onClick={stopShow}>
+                    Arrêter la diffusion
+                  </Button>
+                </div>
+              )}
             </CardContent>
           </Card>
+
+          <div className="space-y-4">
+            <Card>
+              <CardHeader>
+                <CardTitle>Santé de l&apos;appareil</CardTitle>
+                <CardDescription>
+                  Métriques rapportées par le player à chaque battement de cœur.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {device.uptime_seconds == null &&
+                device.memory_percent == null &&
+                device.cpu_percent == null &&
+                device.lan_ip == null ? (
+                  <p className="text-sm text-muted-foreground">
+                    Aucune télémétrie reçue pour l&apos;instant — elle apparaîtra après le
+                    prochain battement de cœur.
+                  </p>
+                ) : (
+                  <dl className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
+                    {device.uptime_seconds != null && (
+                      <div>
+                        <dt className="text-xs text-muted-foreground">Uptime</dt>
+                        <dd className="font-medium">{formatUptime(device.uptime_seconds)}</dd>
+                      </div>
+                    )}
+                    {device.cpu_percent != null && (
+                      <div>
+                        <dt className="text-xs text-muted-foreground">CPU</dt>
+                        <dd className="font-medium">{Math.round(device.cpu_percent)} %</dd>
+                      </div>
+                    )}
+                    {device.memory_percent != null && (
+                      <div>
+                        <dt className="text-xs text-muted-foreground">Mémoire</dt>
+                        <dd className="font-medium">{Math.round(device.memory_percent)} %</dd>
+                      </div>
+                    )}
+                    {device.load_avg != null && (
+                      <div>
+                        <dt className="text-xs text-muted-foreground">Charge</dt>
+                        <dd className="font-medium">{device.load_avg.toFixed(2)}</dd>
+                      </div>
+                    )}
+                    {device.storage_free_bytes != null && (
+                      <div>
+                        <dt className="text-xs text-muted-foreground">Stockage libre</dt>
+                        <dd className="font-medium">{formatBytes(device.storage_free_bytes)}</dd>
+                      </div>
+                    )}
+                    {device.lan_ip && (
+                      <div>
+                        <dt className="text-xs text-muted-foreground">Adresse LAN</dt>
+                        <dd className="font-mono text-xs">{device.lan_ip}</dd>
+                      </div>
+                    )}
+                    {device.wifi_ssid && (
+                      <div>
+                        <dt className="text-xs text-muted-foreground">Réseau Wi-Fi</dt>
+                        <dd className="font-medium">{device.wifi_ssid}</dd>
+                      </div>
+                    )}
+                  </dl>
+                )}
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader>
+                <CardTitle>Widgets d&apos;information</CardTitle>
+                <CardDescription>
+                  Météo, flux RSS ou texte libre, affichés en bas de l&apos;écran.
+                  L&apos;œil cache ou affiche le widget, l&apos;icône de réglage définit
+                  son emplacement et ses paramètres.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <WidgetBar widgets={widgets} onChange={setWidgets} openId={widgetOpenId} onOpenChange={setWidgetOpenId} />
+                {widgetsChanged && (
+                  <Button className="mt-3 w-full" onClick={saveWidgets} disabled={savingWidgets || !device.screen_id}>
+                    {savingWidgets ? "Envoi…" : "Enregistrer et afficher sur l'écran"}
+                  </Button>
+                )}
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader>
+                <CardTitle>Dernières actions</CardTitle>
+                <CardDescription>Commandes envoyées à cet appareil.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <ul className="space-y-2 text-sm">
+                  {commands.slice(0, 6).map((c) => (
+                    <li key={c.id} className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="truncate">{commandLabel(c)}</p>
+                        <p className="text-xs text-muted-foreground">{formatDate(c.created_at)}</p>
+                      </div>
+                      {c.status === "acked" ? null : c.status === "failed" ? (
+                        <Badge variant="destructive">échec</Badge>
+                      ) : (
+                        <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" aria-label="En cours" />
+                      )}
+                    </li>
+                  ))}
+                  {commands.length === 0 && <li className="text-muted-foreground">Aucune action pour l&apos;instant.</li>}
+                </ul>
+              </CardContent>
+            </Card>
+          </div>
         </div>
       )}
 
@@ -395,119 +769,310 @@ export default function DeviceDetailPage() {
         <div className="space-y-4">
           <Card>
             <CardHeader>
-              <CardTitle>Programmation active</CardTitle>
+              <CardTitle>Contenus affichés sur cet écran</CardTitle>
               <CardDescription>
-                Manifeste {manifest ? `v${manifest.version} — ${formatDate(manifest.published_at)}` : "aucun publié"} · média en cours : supervision/heartbeat
+                Glissez-déposez pour changer la priorité : le premier de la liste gagne quand
+                plusieurs contenus sont programmés en même temps.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
-              {!parsedManifest || parsedManifest.blocks.length === 0 ? (
-                <p className="text-sm text-muted-foreground">Aucun bloc programmé — créer un planning puis publier.</p>
+              {orderedSchedules.length === 0 ? (
+                <p className="text-sm text-muted-foreground">Aucun contenu programmé.</p>
               ) : (
-                <div className="space-y-2">
-                  {parsedManifest.blocks.map((block: unknown, idx: number) => {
-                    const b = block as Record<string, unknown>;
-                    const entries = (b.entries as unknown[]) ?? [];
-                    return (
-                      <div key={String(b.schedule_id ?? idx)} className="rounded-md border p-3">
-                        <div className="text-sm font-medium">
-                          {String(b.schedule_name ?? b.schedule_id)} — prio {String(b.priority)}
+                <ul className="space-y-2">
+                  {orderedSchedules.map((s, index) => (
+                    <li
+                      key={s.id}
+                      {...itemProps(s.id)}
+                      className={
+                        "rounded-md border transition-colors" +
+                        (overId === s.id ? " border-primary bg-primary/5" : "") +
+                        (s.excluded_for_this_device || !s.is_active ? " opacity-60" : "")
+                      }
+                    >
+                      <div className="flex flex-wrap cursor-grab items-center gap-3 p-3 active:cursor-grabbing">
+                        <GripVertical className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-bold">
+                          {index + 1}
+                        </span>
+                        <div className="min-w-0 flex-1 basis-[calc(100%-4rem)] sm:basis-auto">
+                          <p className="truncate text-sm font-medium">
+                            {playlists.find((p) => p.id === s.playlist_id)?.name ?? s.name}
+                          </p>
+                          <p className="truncate text-xs text-muted-foreground">
+                            {formatDate(s.start_at)} → {formatDate(s.end_at)}
+                            {!s.device_id && (
+                              <span className="ml-1 text-amber-600 dark:text-amber-400">
+                                · tous les écrans du site
+                              </span>
+                            )}
+                          </p>
+                          <Link
+                            href={`/playlists/${s.playlist_id}`}
+                            className="text-xs text-primary hover:underline"
+                          >
+                            Ouvrir dans Playlists
+                          </Link>
                         </div>
-                        <ul className="mt-1 list-disc pl-5 text-sm">
-                          {(entries as unknown[]).map((e: unknown) => {
-                            const ent = e as Record<string, unknown>;
-                            const mid = String(ent.media_id ?? "");
-                            const media = mediaById[mid];
-                            return (
-                              <li key={mid}>
-                                {media ? `${media.name} (${media.kind})` : mid} — {String(ent.duration_seconds ?? "—")} s
-                              </li>
-                            );
-                          })}
-                        </ul>
+                        <Badge
+                          variant={
+                            s.excluded_for_this_device
+                              ? "secondary"
+                              : s.is_active
+                                ? "success"
+                                : "secondary"
+                          }
+                        >
+                          {s.excluded_for_this_device
+                            ? "masqué ici"
+                            : s.is_active
+                              ? "actif"
+                              : "inactif"}
+                        </Badge>
+                        <Button
+                          className="w-full sm:w-auto"
+                          size="sm"
+                          variant={expandedId === s.id ? "default" : "outline"}
+                          onClick={() => toggleExpand(s)}
+                          disabled={editingBusy}
+                           title={
+                             s.device_id
+                               ? "Réglages de la playlist pour cet écran"
+                               : "Consulter la playlist de base en lecture seule"
+                           }
+                         >
+                           {expandedId === s.id ? <ChevronDown /> : <ChevronRight />} {s.device_id ? "Réglages" : "Consulter"}
+
+                        </Button>
+                        <Button
+                          className="w-full sm:w-auto"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => toggleSchedule(s)}
+                          title={
+                            !s.device_id
+                              ? s.excluded_for_this_device
+                                ? "Réafficher ce contenu sur cet écran (sans toucher aux autres)"
+                                : "Masquer ce contenu sur cet écran uniquement (les autres écrans le gardent)"
+                              : s.is_active
+                                ? "Suspendre ce contenu (il quitte l'écran)"
+                                : "Réactiver ce contenu"
+                          }
+                        >
+                          {!s.device_id
+                            ? s.excluded_for_this_device
+                              ? "Afficher ici"
+                              : "Masquer ici"
+                            : s.is_active
+                              ? "Désactiver"
+                              : "Activer"}
+                        </Button>
+                        <Button
+                          className="w-full sm:w-auto"
+                          size="sm"
+                          variant="destructive"
+                          onClick={() => removeSchedule(s)}
+                          title="Supprimer définitivement cette programmation"
+                        >
+                          Supprimer
+                        </Button>
                       </div>
-                    );
-                  })}
-                  <div className="text-xs text-muted-foreground">Médias du manifeste : {parsedManifest.media.length} fichier(s) référencé(s).</div>
-                </div>
-              )}
-              <div className="flex gap-2">
-                <Select value={assignPlaylist} onChange={(e) => setAssignPlaylist(e.target.value)}>
-                  <option value="">— Choisir une playlist à affecter —</option>
-                  {playlists.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
+                      {expandedId === s.id && expandedPlaylist && (
+                         <div className="min-w-0 space-y-3 border-t bg-muted/30 p-3">
+
+                           {!s.device_id && (
+                             <div className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+                               <span>
+                                 Cette playlist de base est partagée avec tous les appareils du site et
+                                 ne peut pas être modifiée ici. Dupliquez-la pour personnaliser son
+                                 contenu uniquement sur cet appareil.
+                               </span>
+                               <Button
+                                 size="sm"
+                                 variant="outline"
+                                 onClick={() => duplicateForDevice(s)}
+                                 disabled={editingBusy}
+                               >
+                                 <Copy /> Dupliquer pour cet appareil
+                               </Button>
+                             </div>
+                           )}
+
+                           <p className="text-xs font-medium">
+                             Séquence ({sortedExpandedItems.length})
+                             {s.device_id
+                               ? " — chaque modification est envoyée immédiatement à cet appareil."
+                               : " — lecture seule ; dupliquez la playlist pour la personnaliser."}
+                           </p>
+
+                          <ul className="space-y-1">
+                            {sortedExpandedItems.map((item, itemIndex) => {
+                              const media = mediaList.find((m) => m.id === item.media_id);
+                              return (
+                                 <li
+                                   key={item.id}
+                                   className="flex flex-wrap items-center gap-2 rounded border bg-background px-2 py-1.5 text-sm"
+                                 >
+
+                                  <span className="w-5 shrink-0 text-right text-xs text-muted-foreground">
+                                    {itemIndex + 1}
+                                  </span>
+                                  <div className="min-w-0 flex-1">
+                                    <p className="truncate">{media?.name ?? item.media_id}</p>
+                                    <p className="text-xs text-muted-foreground">
+                                      {media?.kind ?? "—"} ·{" "}
+                                      {item.duration_seconds
+                                        ? `${item.duration_seconds} s`
+                                        : "fin de lecture"}
+                                    </p>
+                                  </div>
+                                     <Button
+                                       className="shrink-0"
+                                       size="icon"
+                                       variant="ghost"
+
+                                     disabled={!s.device_id || itemIndex === 0 || editingBusy}
+                                     onClick={() => moveItemInExpanded(item, -1)}
+                                     aria-label="Monter dans la séquence"
+
+                                  >
+                                    <ArrowUp />
+                                  </Button>
+                                     <Button
+                                       className="shrink-0"
+                                       size="icon"
+                                       variant="ghost"
+
+                                     disabled={!s.device_id || itemIndex === sortedExpandedItems.length - 1 || editingBusy}
+                                     onClick={() => moveItemInExpanded(item, 1)}
+                                     aria-label="Descendre dans la séquence"
+
+                                  >
+                                    <ArrowDown />
+                                  </Button>
+                                   <Button
+                                     size="sm"
+                                     variant="destructive"
+                                     disabled={!s.device_id || editingBusy}
+                                     onClick={() => removeItemFromExpanded(item)}
+
+                                  >
+                                    Retirer
+                                  </Button>
+                                </li>
+                              );
+                            })}
+                            {sortedExpandedItems.length === 0 && (
+                              <li className="text-sm text-muted-foreground">
+                                Playlist vide — ajoutez un média ci-dessous.
+                              </li>
+                            )}
+                          </ul>
+                          <div className="flex flex-wrap items-end gap-2">
+                            <div className="min-w-48 flex-1 space-y-1">
+                              <Label htmlFor={`item-media-${expandedPlaylist.id}`}>
+                                Ajouter un média
+                              </Label>
+                               <Select
+                                 id={`item-media-${expandedPlaylist.id}`}
+                                 value={selectedMedia}
+                                 onChange={(e) => setSelectedMedia(e.target.value)}
+                                 disabled={!s.device_id}
+                               >
+
+                                <option value="">— Choisir un média —</option>
+                                {mediaList.map((m) => (
+                                  <option key={m.id} value={m.id}>
+                                    {m.name} ({m.kind})
+                                  </option>
+                                ))}
+                              </Select>
+                            </div>
+                            <div className="w-24 space-y-1">
+                              <Label htmlFor={`item-duration-${expandedPlaylist.id}`}>
+                                Durée (s)
+                              </Label>
+                              <Input
+                                id={`item-duration-${expandedPlaylist.id}`}
+                                type="number"
+                                min={1}
+                                value={itemDuration}
+                               onChange={(e) => setItemDuration(e.target.value)}
+                               disabled={!s.device_id}
+                             />
+
+                            </div>
+                             <Button
+                               onClick={addItemToExpanded}
+                               disabled={!s.device_id || !selectedMedia || editingBusy}
+
+                            >
+                              {editingBusy ? <Loader2 className="animate-spin" /> : "Ajouter"}
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                    </li>
                   ))}
-                </Select>
-                <Button onClick={assignPlaylistToScreen} disabled={!assignPlaylist}>
-                  Affecter
-                </Button>
+                </ul>
+              )}
+              <div className="space-y-2 rounded-md border p-3">
+                <Label htmlFor="assign-playlist">Ajouter une playlist sur cet écran</Label>
+                <div className="flex flex-wrap gap-2">
+                  <Select id="assign-playlist" value={assignPlaylist} onChange={(e) => setAssignPlaylist(e.target.value)} className="min-w-56 flex-1">
+                    <option value="">— Choisir une playlist —</option>
+                    {playlists.map((p) => (
+                      <option key={p.id} value={p.id}>{p.name}</option>
+                    ))}
+                  </Select>
+                  <Button onClick={assignPlaylistToScreen} disabled={!assignPlaylist}>Affecter et envoyer</Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Une copie de la playlist est créée pour cet écran (30 jours). Personnalisez-la
+                  ensuite (ajouts, retraits, ordre) via le bouton « Réglages » de la liste
+                  ci-dessus — sans toucher à l&apos;originale ni aux autres appareils.
+                </p>
               </div>
-              <p className="text-xs text-muted-foreground">
-                L&apos;affectation crée un planning (priorité 0, 30 jours) pour le site du device. Publier ensuite.
-              </p>
             </CardContent>
           </Card>
-          {manifest && (
-            <Card>
-              <CardHeader>
-                <CardTitle>Manifeste brut</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <pre className="max-h-64 overflow-auto rounded bg-muted p-3 text-xs">{manifest.payload.slice(0, 4000)}</pre>
-              </CardContent>
-            </Card>
-          )}
         </div>
       )}
 
-      {tab === "planning" && (
+      {tab === "disposition" && (
         <Card>
           <CardHeader>
-            <CardTitle>Planning du device (site)</CardTitle>
+            <CardTitle>Disposition de l&apos;écran</CardTitle>
             <CardDescription>
-              Jours/heures, fuseau, priorité, validité. Priorité la plus haute gagne ; à égalité, l&apos;ID le plus petit l&apos;emporte.
+              Comment le contenu occupe l&apos;écran : plein écran, bandeau + vidéo, grille…
+              Les changements sont envoyés directement à cet écran.
             </CardDescription>
           </CardHeader>
-          <CardContent>
-            {schedules.length === 0 ? (
-              <p className="text-sm text-muted-foreground">Aucun planning pour ce site.</p>
+          <CardContent className="space-y-4">
+            {!device.screen_id ? (
+              <p className="text-sm text-muted-foreground">
+                Cet appareil n&apos;est rattaché à aucun écran. Rattachez-le depuis
+                « Sites & écrans » pour personnaliser sa disposition.
+              </p>
             ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Nom</TableHead>
-                    <TableHead>Playlist</TableHead>
-                    <TableHead>Fenêtre</TableHead>
-                    <TableHead>Prio</TableHead>
-                    <TableHead>Actif</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {[...schedules]
-                    .sort((a, b) => b.priority - a.priority || a.id.localeCompare(b.id))
-                    .map((s) => (
-                      <TableRow key={s.id}>
-                        <TableCell className="font-medium">{s.name}</TableCell>
-                        <TableCell>{playlists.find((p) => p.id === s.playlist_id)?.name ?? s.playlist_id}</TableCell>
-                        <TableCell className="text-xs">
-                          {formatDate(s.start_at)} → {formatDate(s.end_at)}
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant="secondary">{s.priority}</Badge>
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant={s.is_active ? "success" : "secondary"}>{s.is_active ? "actif" : "inactif"}</Badge>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                </TableBody>
-              </Table>
+              <>
+                <LayoutEditor
+                  value={layout}
+                  onChange={setLayout}
+                  mediaOptions={[]}
+                  playlistOptions={playlists}
+                />
+                <div className="flex gap-2">
+                  <Button onClick={saveLayout} disabled={savingLayout || !layout}>
+                    {savingLayout ? "Envoi…" : "Enregistrer et envoyer"}
+                  </Button>
+                  {layout && (
+                    <Button variant="outline" onClick={() => setLayout(null)}>
+                      Revenir au plein écran par défaut
+                    </Button>
+                  )}
+                </div>
+              </>
             )}
-            <p className="mt-2 text-xs text-muted-foreground">
-              Gérer les plannings depuis <Link href="/schedules" className="underline">Plannings</Link>. Les conflits sont signalés à la création (priorité la plus élevée l&apos;emporte).
-            </p>
           </CardContent>
         </Card>
       )}

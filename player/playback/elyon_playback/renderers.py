@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
 
@@ -144,6 +146,96 @@ class BlankState:
 
     def unblank(self) -> None:
         self.blanked = False
+
+
+class FileBlankState:
+    """État blank lu depuis un fichier posé par l'agent (commande distante)."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    @property
+    def blanked(self) -> bool:
+        return self.path.exists()
+
+    def blank(self) -> None:
+        self.path.write_text("1", encoding="utf-8")
+
+    def unblank(self) -> None:
+        self.path.unlink(missing_ok=True)
+
+
+class DummyRenderer:
+    """Rendu headless pour Raspberry émulés / CI : pas d'écran, pas de mpv.
+
+    Écrit l'élément courant dans `status_file` et attend la durée (accélérable
+    via `speed`, ex. 20 → 20× plus rapide).
+    """
+
+    def __init__(
+        self,
+        status_file: Path | None = None,
+        sleep_fn: Callable[[float], None] = time.sleep,
+        speed: float = 1.0,
+    ) -> None:
+        self.status_file = status_file
+        self.sleep_fn = sleep_fn
+        self.speed = max(speed, 0.001)
+        self.events: list[tuple[str, object]] = []
+        self._blanked = False
+
+    def _sleep(self, seconds: float) -> None:
+        self.sleep_fn(max(seconds, 0.0) / self.speed)
+
+    def _status(self, payload: dict[str, object]) -> None:
+        if self.status_file is None:
+            return
+        self.status_file.parent.mkdir(parents=True, exist_ok=True)
+        current: dict[str, object] = {}
+        try:
+            loaded = json.loads(self.status_file.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                current = loaded
+        except (OSError, json.JSONDecodeError):
+            current = {}
+        # Fusion : le moteur publie media_id/name/show ; le renderer complète
+        # avec ce qu'il observe (kind, durée, état). Sans fusion, le media_id
+        # du média « Afficher » est perdu avant le heartbeat de l'agent.
+        current.update(payload)
+        tmp = self.status_file.with_suffix(self.status_file.suffix + ".tmp")
+        tmp.write_text(json.dumps(current), encoding="utf-8")
+        tmp.replace(self.status_file)
+
+    def play_image(self, path: Path, duration_seconds: float) -> None:
+        self.events.append(("image", (path, duration_seconds)))
+        self._status(
+            {
+                "kind": "image",
+                "path": str(path),
+                "duration_seconds": duration_seconds,
+                "state": "playing",
+            }
+        )
+        self._sleep(duration_seconds)
+
+    def play_video(self, path: Path) -> None:
+        self.events.append(("video", path))
+        self._status({"kind": "video", "path": str(path), "state": "playing"})
+        self._sleep(1.0)
+
+    def play_url(self, url: str) -> None:
+        self.events.append(("url", url))
+        self._status({"kind": "url", "path": url, "state": "playing"})
+        self._sleep(1.0)
+
+    def blank(self) -> None:
+        self.events.append(("blank", None))
+        self._blanked = True
+        self._status({"state": "blank", "media_id": None})
+
+    def unblank(self) -> None:
+        self.events.append(("unblank", None))
+        self._blanked = False
 
 
 def touch_heartbeat(path: Path) -> None:

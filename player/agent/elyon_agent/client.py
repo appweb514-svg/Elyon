@@ -118,6 +118,12 @@ class ElyonClient:
         current_media_id: str | None = None,
         storage_free_bytes: int | None = None,
         agent_version: str = "0.1.0",
+        uptime_seconds: int | None = None,
+        load_avg: float | None = None,
+        memory_percent: float | None = None,
+        cpu_percent: float | None = None,
+        lan_ip: str | None = None,
+        wifi_ssid: str | None = None,
     ) -> HeartbeatResult:
         response = self._client.post(
             f"/api/devices/{state.device_id}/heartbeat",
@@ -127,6 +133,12 @@ class ElyonClient:
                 "current_media_id": current_media_id,
                 "storage_free_bytes": storage_free_bytes,
                 "agent_version": agent_version,
+                "uptime_seconds": uptime_seconds,
+                "load_avg": load_avg,
+                "memory_percent": memory_percent,
+                "cpu_percent": cpu_percent,
+                "lan_ip": lan_ip,
+                "wifi_ssid": wifi_ssid,
             },
         )
         if response.status_code in (401, 403):
@@ -176,6 +188,18 @@ class ElyonClient:
             signature=data["signature"],
             published_at=data["published_at"],
         )
+
+    def fetch_widgets_feed(self, state: DeviceState) -> dict[str, Any]:
+        """Données des widgets de l'écran (météo, RSS) pour le rendu player."""
+        response = self._client.get(
+            f"/api/devices/{state.device_id}/widgets",
+            headers=self._device_headers(state.token),
+        )
+        if response.status_code in (401, 403):
+            raise AgentError(f"Flux widgets refusé ({response.status_code})")
+        response.raise_for_status()
+        data = response.json()
+        return data if isinstance(data, dict) else {}
 
     def download_media(
         self,
@@ -245,6 +269,28 @@ class ElyonClient:
             raise AgentError("SHA-256 invalide après téléchargement")
         part.replace(dest)
         return DownloadResult(path=dest, sha256=sha256, size_bytes=size, resumed=resumed)
+
+    def download_device_media(
+        self,
+        media_id: str,
+        dest: Path,
+        auth_token: str,
+        page_index: int | None = None,
+    ) -> DownloadResult:
+        """Télécharge un média (ou une page PDF) via le point device-file.
+
+        N'importe quel media de l'organisation du player peut être téléchargé
+        (indépendamment du manifeste publié) — utilisé par la commande SHOW.
+        """
+        suffix = f"/pages/{page_index}/device-file" if page_index is not None else "/device-file"
+        url = f"/api/media/{media_id}{suffix}"
+        return self.download_media(
+            url,
+            dest,
+            expected_sha256=None,
+            expected_size=None,
+            auth_token=auth_token,
+        )
 
     def verify_manifest(self, manifest: Manifest, public_key_pem: str) -> dict[str, Any]:
         """Vérifie la signature Ed25519 du manifeste et retourne le payload."""

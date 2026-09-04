@@ -8,7 +8,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${ELYON_POSTGRES_USER} -d $${ELYON_POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -26,6 +26,15 @@ services:
     environment:
       ELYON_DATABASE_URL: ${ELYON_DATABASE_URL:-postgresql://elyon:CHANGE_ME@db:5432/elyon}
       ELYON_REDIS_URL: ${ELYON_REDIS_URL:-redis://redis:6379/0}
+      ELYON_MEDIA_STORAGE_ROOT: /var/lib/elyon/media
+      ELYON_SIGNING_KEY_FILE: /var/lib/elyon/signing_key.pem
+      ELYON_PUBLIC_BASE_URL: ${ELYON_PUBLIC_BASE_URL:-http://api:8000}
+      ELYON_SESSION_SECRET: ${ELYON_SESSION_SECRET:-elyon-lab-secret}
+      ELYON_ENQUEUE_MEDIA_PROCESSING: "true"
+      ELYON_AUTO_MIGRATE: "true"
+    volumes:
+      - media:/var/lib/elyon/media
+      - signing:/var/lib/elyon
     depends_on:
       db:
         condition: service_healthy
@@ -33,6 +42,17 @@ services:
         condition: service_healthy
     ports:
       - "8000:8000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
   worker:
     build:
@@ -41,16 +61,30 @@ services:
     environment:
       ELYON_DATABASE_URL: ${ELYON_DATABASE_URL:-postgresql://elyon:CHANGE_ME@db:5432/elyon}
       ELYON_REDIS_URL: ${ELYON_REDIS_URL:-redis://redis:6379/0}
+      ELYON_MEDIA_STORAGE_ROOT: /var/lib/elyon/media
+      ELYON_SIGNING_KEY_FILE: /var/lib/elyon/signing_key.pem
+      ELYON_AUTO_MIGRATE: "true"
+    volumes:
+      - media:/var/lib/elyon/media
+      - signing:/var/lib/elyon
     depends_on:
       api:
         condition: service_started
+      redis:
+        condition: service_healthy
 
   web:
     build: ./apps/web
     environment:
+      ELYON_API_URL: ${ELYON_API_URL:-http://api:8000}
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    depends_on:
+      api:
+        condition: service_healthy
     ports:
       - "127.0.0.1:3001:3000"
 
 volumes:
   pgdata:
+  media:
+  signing:

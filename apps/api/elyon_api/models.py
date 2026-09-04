@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import enum
+import json
 import uuid
 
 from sqlalchemy import (
@@ -10,6 +11,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     Enum,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -63,6 +65,7 @@ class MediaKind(enum.StrEnum):
     VIDEO = "video"
     IMAGE = "image"
     PDF = "pdf"
+    OFFICE = "office"
 
 
 class MediaStatus(enum.StrEnum):
@@ -92,6 +95,8 @@ class CommandType(enum.StrEnum):
     BLANK = "blank"
     UNBLANK = "unblank"
     CAPTURE = "capture"
+    SHOW = "show"
+    STOP_SHOW = "stop_show"
 
 
 class EventLevel(enum.StrEnum):
@@ -112,6 +117,26 @@ class Organization(Base):
     users: Mapped[list[User]] = relationship(back_populates="organization")
 
 
+class Team(Base):
+    """Équipe : groupe de partage de bibliothèque avec quota propre.
+
+    `quota_bytes` = plafond global de stockage de l'équipe ; 0 = illimité.
+    Les membres partagent les mêmes fichiers (isolation par équipe).
+    """
+
+    __tablename__ = "teams"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    org_id: Mapped[str] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String(120))
+    quota_bytes: Mapped[int] = mapped_column(BigInteger, default=15 * 1024**3)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "name", name="uq_teams_org_name"),
+    )
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -119,6 +144,11 @@ class User(Base):
     org_id: Mapped[str | None] = mapped_column(
         ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True
     )
+    team_id: Mapped[str | None] = mapped_column(
+        ForeignKey("teams.id", ondelete="SET NULL"), nullable=True
+    )
+    # 0 = illimité (défaut) ; sinon plafond personnel en octets.
+    quota_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     site_id: Mapped[str | None] = mapped_column(
         ForeignKey("sites.id", ondelete="SET NULL"), nullable=True
     )
@@ -130,6 +160,7 @@ class User(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=now)
 
     organization: Mapped[Organization | None] = relationship(back_populates="users")
+    team: Mapped[Team | None] = relationship()
     site: Mapped[Site | None] = relationship()
 
 
@@ -176,10 +207,69 @@ class Device(Base):
     last_seen_at: Mapped[dt.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    player_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    current_media_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    is_preview: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Télémétrie rapportée par le player (heartbeat).
+    uptime_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    load_avg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    memory_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cpu_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    storage_free_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    lan_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    wifi_ssid: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=now)
 
     site: Mapped[Site | None] = relationship(back_populates="devices")
     screen: Mapped[Screen | None] = relationship(back_populates="device")
+
+
+class DeviceGroup(Base):
+    """Groupe d'appareils : commandes et programmation groupées."""
+
+    __tablename__ = "device_groups"
+    __table_args__ = (UniqueConstraint("org_id", "name", name="uq_device_groups_org_name"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    org_id: Mapped[str] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String(120))
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+    members: Mapped[list[DeviceGroupMember]] = relationship(
+        back_populates="group", cascade="all, delete-orphan"
+    )
+
+
+class DeviceGroupMember(Base):
+    __tablename__ = "device_group_members"
+
+    group_id: Mapped[str] = mapped_column(
+        ForeignKey("device_groups.id", ondelete="CASCADE"), primary_key=True
+    )
+    device_id: Mapped[str] = mapped_column(
+        ForeignKey("devices.id", ondelete="CASCADE"), primary_key=True
+    )
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+    group: Mapped[DeviceGroup] = relationship(back_populates="members")
+    device: Mapped[Device] = relationship()
+
+
+class PlaybackEvent(Base):
+    """Preuve de lecture : changement d'état ou de média d'un écran."""
+
+    __tablename__ = "playback_events"
+    __table_args__ = (
+        Index("ix_playback_device_recorded", "device_id", "recorded_at"),
+        Index("ix_playback_org_recorded", "org_id", "recorded_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    org_id: Mapped[str] = mapped_column(String(32))
+    device_id: Mapped[str] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"))
+    media_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    state: Mapped[str] = mapped_column(String(32))
+    recorded_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
 class Screen(Base):
@@ -200,6 +290,9 @@ class Screen(Base):
         ForeignKey("devices.id", ondelete="SET NULL"), nullable=True
     )
     layout_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Widgets d'information (météo, flux RSS, texte libre) superposés en bas
+    # de l'écran : [{type, position, visible, params}] — voir schemas.Widget.
+    widgets_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=now)
 
     site: Mapped[Site] = relationship(back_populates="screens")
@@ -220,10 +313,20 @@ class EnrollmentToken(Base):
 
 class Media(Base):
     __tablename__ = "media"
-    __table_args__ = (Index("ix_media_org_status", "org_id", "status"),)
+    __table_args__ = (
+        Index("ix_media_org_status", "org_id", "status"),
+        Index("ix_media_user", "user_id"),
+        Index("ix_media_team", "team_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     org_id: Mapped[str] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"))
+    user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    team_id: Mapped[str | None] = mapped_column(
+        ForeignKey("teams.id", ondelete="SET NULL"), nullable=True
+    )
     name: Mapped[str] = mapped_column(String(160))
     original_filename: Mapped[str] = mapped_column(String(255))
     kind: Mapped[MediaKind] = mapped_column(_enum(MediaKind))
@@ -236,17 +339,62 @@ class Media(Base):
     height: Mapped[int | None] = mapped_column(Integer, nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     pages_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Corbeille : `deleted_at` renseigné = fichier mis à la corbeille (purge
+    # automatique après 30 jours). Exclu de la bibliothèque et des quotas.
+    deleted_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=now)
 
     playlists: Mapped[list[PlaylistItem]] = relationship(back_populates="media")
 
+    @property
+    def pages_count(self) -> int | None:
+        """Nombre de pages rendues (PDF / Office convertis), sinon None."""
+        if not self.pages_json:
+            return None
+        try:
+            pages = json.loads(self.pages_json)
+        except (TypeError, ValueError):
+            return None
+        return len(pages) if isinstance(pages, list) else None
+
+
+class PlaylistRevision(Base):
+    __tablename__ = "playlist_revisions"
+    __table_args__ = (
+        UniqueConstraint("playlist_id", "version", name="uq_playlist_revisions_version"),
+        Index("ix_playlist_revisions_playlist_created", "playlist_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    playlist_id: Mapped[str] = mapped_column(
+        ForeignKey("playlists.id", ondelete="CASCADE")
+    )
+    version: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(16), default="published")
+    items_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_by: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=now)
+
 
 class Playlist(Base):
     __tablename__ = "playlists"
-    __table_args__ = (UniqueConstraint("org_id", "name", name="uq_playlists_org_name"),)
+    __table_args__ = (
+        UniqueConstraint("org_id", "name", name="uq_playlists_org_name"),
+        Index("ix_playlists_team", "team_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     org_id: Mapped[str] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"))
+    published_revision_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # NULL = playliste globale (créée par un administrateur ou historique) ;
+    # sinon rattachée à une équipe (visible par ses membres + les admins).
+    team_id: Mapped[str | None] = mapped_column(
+        ForeignKey("teams.id", ondelete="SET NULL"), nullable=True
+    )
     name: Mapped[str] = mapped_column(String(160))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=now)
@@ -254,6 +402,11 @@ class Playlist(Base):
     items: Mapped[list[PlaylistItem]] = relationship(
         back_populates="playlist", cascade="all, delete-orphan", order_by="PlaylistItem.position"
     )
+    team: Mapped[Team | None] = relationship()
+
+    @property
+    def team_name(self) -> str | None:
+        return self.team.name if self.team else None
 
 
 class PlaylistItem(Base):
@@ -292,10 +445,32 @@ class Schedule(Base):
     end_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True))
     priority: Mapped[int] = mapped_column(Integer, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Optionnel : cible un seul écran (device). NULL = tous les écrans du site.
+    device_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=now)
 
     site: Mapped[Site] = relationship(back_populates="schedules")
     playlist: Mapped[Playlist] = relationship()
+
+
+class ScheduleExclusion(Base):
+    """Exclusion d'un planning pour un écran précis.
+
+    Permet de masquer un planning partagé (« tous les écrans du site ») sur un
+    seul appareil sans affecter les autres : le manifeste de cet écran ne
+    contient plus ce contenu, les autres écrans restent inchangés.
+    """
+
+    __tablename__ = "schedule_exclusions"
+    __table_args__ = (
+        UniqueConstraint("schedule_id", "device_id", name="uq_exclusion_schedule_device"),
+        Index("ix_exclusions_device", "device_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    schedule_id: Mapped[str] = mapped_column(ForeignKey("schedules.id", ondelete="CASCADE"))
+    device_id: Mapped[str] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"))
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
 class Manifest(Base):

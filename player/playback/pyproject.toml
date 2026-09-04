@@ -3,7 +3,7 @@ name = "elyon-playback"
 version = "0.1.0"
 description = "Moteur de lecture Elyon : mpv (vidéo/images/PDF), Chromium kiosque, watchdog"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["Pillow>=10.0"]
 
 [project.optional-dependencies]
 dev = [

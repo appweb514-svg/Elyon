@@ -26,6 +26,8 @@ class UserOut(BaseModel):
     role: Role
     is_active: bool
     org_id: str | None = None
+    team_id: str | None = None
+    quota_bytes: int = 0
     site_id: str | None = None
     created_at: dt.datetime
 
@@ -38,6 +40,8 @@ class UserCreate(BaseModel):
     full_name: str = Field(min_length=1, max_length=120)
     role: Role = Role.VIEWER
     org_id: str | None = None
+    team_id: str | None = None
+    quota_bytes: int = Field(default=0, ge=0)
     site_id: str | None = None
 
 
@@ -46,6 +50,40 @@ class UserPatch(BaseModel):
     role: Role | None = None
     is_active: bool | None = None
     site_id: str | None = None
+    team_id: str | None = None
+    quota_bytes: int | None = Field(default=None, ge=0)
+
+
+class ProfilePatch(BaseModel):
+    """Modification de son propre profil (utilisateur connecté)."""
+
+    full_name: str | None = Field(default=None, min_length=1, max_length=120)
+    email: str | None = None
+    password: str | None = Field(default=None, min_length=12)
+    current_password: str | None = None
+
+
+class TeamCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    # 0 = illimité ; défaut 15 Go par équipe.
+    quota_bytes: int = Field(default=15 * 1024**3, ge=0)
+
+
+class TeamPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    quota_bytes: int | None = Field(default=None, ge=0)
+
+
+class TeamOut(BaseModel):
+    id: str
+    org_id: str
+    name: str
+    quota_bytes: int
+    used_bytes: int = 0
+    members: int = 0
+    created_at: dt.datetime
+
+    model_config = {"from_attributes": True}
 
 
 class OrganizationOut(BaseModel):
@@ -97,6 +135,26 @@ class ScreenLayout(BaseModel):
     zones: list[ScreenLayoutZone] = Field(default_factory=list)
 
 
+class WidgetIn(BaseModel):
+    """Widget d'information affiché sur l'écran (météo, RSS, texte)."""
+
+    type: str = Field(description="weather|rss|text|clock|html")
+    position: str = Field(
+        default="bottom-left",
+        description=(
+            "top-left|top-right|bottom-left|bottom-center|bottom-right|bottom-ticker "
+            "(barre du haut : météo à gauche / horloge à droite ; "
+            "bottom-ticker : flux RSS défilant en barre pleine largeur)"
+        ),
+    )
+    visible: bool = True
+    params: dict[str, str | int | float | None] = Field(default_factory=dict)
+
+
+class WidgetOut(WidgetIn):
+    id: str = Field(default_factory=lambda: __import__("uuid").uuid4().hex[:12])
+
+
 class ScreenPatch(BaseModel):
     name: str | None = None
     width: int | None = None
@@ -104,6 +162,7 @@ class ScreenPatch(BaseModel):
     orientation: str | None = None
     device_id: str | None = None
     layout: ScreenLayout | None = None
+    widgets: list[WidgetIn] | None = None
 
 
 class ScreenOut(BaseModel):
@@ -116,6 +175,7 @@ class ScreenOut(BaseModel):
     orientation: str
     device_id: str | None = None
     layout: ScreenLayout | None = None
+    widgets: list[WidgetOut] | None = None
     created_at: dt.datetime
 
     model_config = {"from_attributes": True}
@@ -139,6 +199,16 @@ class DeviceOut(BaseModel):
     status: DeviceStatus
     computed_status: str | None = None
     last_seen_at: dt.datetime | None = None
+    player_state: str | None = None
+    current_media_id: str | None = None
+    is_preview: bool = False
+    uptime_seconds: int | None = None
+    load_avg: float | None = None
+    memory_percent: float | None = None
+    cpu_percent: float | None = None
+    storage_free_bytes: int | None = None
+    lan_ip: str | None = None
+    wifi_ssid: str | None = None
     created_at: dt.datetime
 
     model_config = {"from_attributes": True}
@@ -147,6 +217,16 @@ class DeviceOut(BaseModel):
 class DevicePatch(BaseModel):
     name: str | None = None
     site_id: str | None = None
+    is_preview: bool | None = None
+
+
+class MediaRename(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+
+
+class MediaShowRequest(BaseModel):
+    device_id: str = Field(min_length=1, max_length=32)
+    duration_seconds: int | None = Field(default=None, ge=1)
 
 
 class EnrollTokenOut(BaseModel):
@@ -181,9 +261,15 @@ class MediaOut(BaseModel):
     width: int | None = None
     height: int | None = None
     duration_ms: int | None = None
+    team_name: str | None = None
+    pages_count: int | None = None
     created_at: dt.datetime
 
     model_config = {"from_attributes": True}
+
+
+class TeamShareIn(BaseModel):
+    team_id: str = Field(min_length=1, max_length=32)
 
 
 class PlaylistCreate(BaseModel):
@@ -208,6 +294,8 @@ class PlaylistItemOut(BaseModel):
 class PlaylistOut(BaseModel):
     id: str
     org_id: str
+    team_id: str | None = None
+    team_name: str | None = None
     name: str
     description: str | None = None
     created_at: dt.datetime
@@ -217,6 +305,41 @@ class PlaylistOut(BaseModel):
 
 class PlaylistDetailOut(PlaylistOut):
     items: list[PlaylistItemOut] = []
+    published_version: int | None = None
+    draft_changed: bool = False
+
+
+class PlaylistValidationOut(BaseModel):
+    valid: bool
+    errors: list[str]
+    warnings: list[str]
+    item_count: int
+    total_duration_seconds: int
+
+
+class PlaylistRevisionOut(BaseModel):
+    id: str
+    playlist_id: str
+    version: int
+    status: str
+    items: list[PlaylistItemOut]
+    created_by: str | None = None
+    created_at: dt.datetime
+
+
+class PlaylistDiffOut(BaseModel):
+    published_version: int | None = None
+    draft: list[PlaylistItemOut]
+    published: list[PlaylistItemOut]
+    added: list[str]
+    removed: list[str]
+    reordered: bool
+    changed: bool
+
+
+class PlaylistDuplicateIn(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    description: str | None = None
 
 
 class ScheduleCreate(BaseModel):
@@ -227,6 +350,8 @@ class ScheduleCreate(BaseModel):
     end_at: dt.datetime
     priority: int = 0
     is_active: bool = True
+    # Optionnel : cible un seul écran (device). Absent = tous les écrans du site.
+    device_id: str | None = None
 
 
 class SchedulePatch(BaseModel):
@@ -236,6 +361,7 @@ class SchedulePatch(BaseModel):
     end_at: dt.datetime | None = None
     priority: int | None = None
     is_active: bool | None = None
+    device_id: str | None = None
 
 
 class ScheduleOut(BaseModel):
@@ -248,9 +374,17 @@ class ScheduleOut(BaseModel):
     end_at: dt.datetime
     priority: int
     is_active: bool
+    device_id: str | None = None
+    # Renseigné uniquement quand la liste est demandée pour un device précis :
+    # True = ce planning est masqué sur CET écran (exclusion locale).
+    excluded_for_this_device: bool = False
     created_at: dt.datetime
 
     model_config = {"from_attributes": True}
+
+
+class ScheduleExclusionIn(BaseModel):
+    device_id: str
 
 
 class HeartbeatIn(BaseModel):
@@ -258,6 +392,12 @@ class HeartbeatIn(BaseModel):
     current_media_id: str | None = None
     storage_free_bytes: int | None = None
     agent_version: str | None = None
+    uptime_seconds: int | None = None
+    load_avg: float | None = None
+    memory_percent: float | None = None
+    cpu_percent: float | None = None
+    lan_ip: str | None = None
+    wifi_ssid: str | None = None
 
 
 class CommandIn(BaseModel):
@@ -299,5 +439,21 @@ class ManifestOut(BaseModel):
     payload: str
     signature: str
     published_at: dt.datetime
+
+    model_config = {"from_attributes": True}
+
+
+class AuditLogOut(BaseModel):
+    id: str
+    org_id: str | None = None
+    user_id: str | None = None
+    user_name: str | None = None
+    action: str
+    resource_type: str
+    resource_id: str | None = None
+    resource_name: str | None = None
+    detail: str | None = None
+    ip: str | None = None
+    created_at: dt.datetime
 
     model_config = {"from_attributes": True}

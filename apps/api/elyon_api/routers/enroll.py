@@ -180,6 +180,8 @@ def patch_device(
     if body.site_id is not None:
         site = _get_site(db, user, body.site_id)
         device.site_id = site.id
+    if body.is_preview is not None:
+        device.is_preview = body.is_preview
     db.commit()
     db.refresh(device)
     audit(db, "device.update", "device", device.id, user=user)
@@ -207,7 +209,36 @@ def approve_device(
     db.refresh(device)
     audit(db, "device.approve", "device", device.id, user=user)
     _event(db, device.org_id, device.site_id, device.id, "device_approved", EventLevel.INFO,
-           f"Player {device.name} approuvé")
+           f"Appareil {device.name} approuvé")
+    db.commit()
+    out = DeviceOut.model_validate(device)
+    out.screen_id = device.screen.id if device.screen else None
+    return out
+
+
+@router.post("/devices/{device_id}/unblock")
+def unblock_device(
+    device_id: str, user: User = Depends(require_permission(Permission.DEVICE_APPROVE)),  # noqa: E501
+    db: Session = Depends(get_db)
+) -> DeviceOut:
+    """Réactive un device bloqué : nouveau token requis (l'ancien est révoqué).
+
+    Le device repasse en « pending » : il doit se réenrôler sur place avec un
+    nouveau code (rotation de token), puis être approuvé — même parcours qu'un
+    matériel récupéré après perte.
+    """
+    device = db.get(Device, device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail="Device introuvable")
+    require_site_access(db, user, device.org_id)
+    if device.status != DeviceStatus.BLOCKED:
+        raise HTTPException(status_code=409, detail="Device non bloqué")
+    device.status = DeviceStatus.PENDING
+    db.commit()
+    db.refresh(device)
+    audit(db, "device.unblock", "device", device.id, user=user)
+    _event(db, device.org_id, device.site_id, device.id, "device_unblocked", EventLevel.INFO,
+           f"Appareil {device.name} débloqué — réenrôlement requis")
     db.commit()
     out = DeviceOut.model_validate(device)
     out.screen_id = device.screen.id if device.screen else None
@@ -231,7 +262,7 @@ def block_device(
     db.refresh(device)
     audit(db, "device.block", "device", device.id, user=user)
     _event(db, device.org_id, device.site_id, device.id, "device_blocked", EventLevel.WARNING,
-           f"Player {device.name} révoqué")
+           f"Appareil {device.name} révoqué")
     db.commit()
     out = DeviceOut.model_validate(device)
     out.screen_id = None
@@ -255,7 +286,7 @@ def disable_device(
     audit(db, "device.disable", "device", device.id, user=user)
     _event(
         db, device.org_id, device.site_id, device.id,
-        "device_disabled", EventLevel.WARNING, f"Player {device.name} désactivé"
+        "device_disabled", EventLevel.WARNING, f"Appareil {device.name} désactivé"
     )
     db.commit()
     out = DeviceOut.model_validate(device)

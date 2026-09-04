@@ -50,15 +50,27 @@ Voir `docs/rbac.md` pour le mapping rôle → permissions.
 | GET | `/admin/devices/{id}/commands` | `device.view` | Historique commandes (admin) |
 | GET | `/admin/devices/{id}/manifest` | `device.view` | Aperçu manifeste sans Bearer |
 | GET | `/admin/devices/{id}/status` | `device.view` | Statut complet (computed + manifest_version) |
+| GET | `/admin/wall` | `device.view` | Mur d'écrans (état de lecture de chaque player, `is_preview`) |
+| GET | `/media/{id}/preview-file` | `media.view` | Fichier média pour le back-office / mur VNC |
 
 ## Médias
 
+> **Isolation stricte par utilisateur** : chaque compte dispose d'un espace de
+> stockage personnel (quota `user_quota_bytes`, défaut **15 Go**). Chacun ne
+> voit que ses propres médias ; le superadmin ne peut pas accéder aux médias
+> des autres utilisateurs. L'upload vérifie la somme de l'espace consommé de
+> l'utilisateur courant (`413` si quota dépassé).
+
 | Méthode | Route | Permission | Description |
-|---|---|---|---|
-| POST | `/media?name=` | `media.upload` | Upload multipart (image/vidéo/PDF), quota par org |
+|---|---|---|
+| POST | `/media?name=` | `media.upload` | Upload multipart (image/vidéo/PDF), quota personnel |
 | GET | `/media` · `/media/{id}` | `media.view` | Liste, détail (kind, sha256, dimensions…) |
+| POST | `/media/{id}/show` | `device.command` | Afficher immédiatement sur un Raspberry (`{device_id, duration_seconds?}`) |
+| POST | `/media/{id}/playlists/{playlist_id}` | `playlist.edit` | Ajouter le média en fin de playliste |
 | GET | `/media/{id}/file` | Bearer device | Fichier original (supporte Range) |
+| GET | `/media/{id}/device-file` | Bearer device | Fichier pour téléchargement direct d'un Raspberry (commande Afficher) |
 | GET | `/media/{id}/pages/{index}/file` | Bearer device | Page PNG d'un PDF converti |
+| GET | `/media/{id}/pages/{index}/device-file` | Bearer device | Page PNG pour téléchargement direct d'un Raspberry |
 | DELETE | `/media/{id}` | `media.delete` | Suppression |
 
 ## Contenu
@@ -79,10 +91,11 @@ Voir `docs/rbac.md` pour le mapping rôle → permissions.
 | GET | `/devices/{id}/manifest` | Bearer device | Dernier manifeste (payload + signature Ed25519) |
 | POST | `/devices/{id}/heartbeat` | Bearer device | État (state, média courant, stockage libre) |
 | GET | `/devices/{id}/commands` | Bearer device | Commandes en attente |
-| POST | `/devices/{id}/commands` | `device.command` | Envoie reboot/resync/blank/unblank/capture |
+| POST | `/devices/{id}/commands` | `device.command` | Envoie reboot/resync/blank/unblank/capture/show |
 | POST | `/devices/{id}/commands/{cmd_id}/ack` | Bearer device | Accusé de traitement |
 | GET | `/events` | `device.view` | Journal d'événements filtrable |
 | GET | `/dashboard` | `device.view` | Compteurs + derniers événements |
+| GET | `/audit/logs` | `audit.view` | Journal d'audit (filtres action/resource_type/user_id) |
 | GET | `/admin/devices/{id}/status` | `device.view` | Voir Enrôlement & devices |
 
 ## Erreurs

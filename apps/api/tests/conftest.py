@@ -20,6 +20,7 @@ def settings(tmp_path: Path) -> Settings:
         session_secret="test-secret",
         public_base_url="http://testserver",
         auto_migrate=False,
+        enqueue_media_processing=False,
         session_cookie_name="elyon_session",
         csrf_cookie_name="elyon_csrf",
     )

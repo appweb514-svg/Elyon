@@ -3,8 +3,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { ArrowDown, ArrowUp } from "lucide-react";
+import { ArrowDown, ArrowUp, GripVertical } from "lucide-react";
 import { api } from "@/lib/api";
+import { Badge } from "@/components/ui/badge";
+import { useDragOrder } from "@/lib/use-drag-order";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -39,6 +41,16 @@ type PlaylistDetail = {
   name: string;
   description: string | null;
   items: Item[];
+  published_version?: number | null;
+  draft_changed?: boolean;
+};
+
+type Validation = {
+  valid: boolean;
+  errors: string[];
+  warnings: string[];
+  item_count: number;
+  total_duration_seconds: number;
 };
 
 export default function PlaylistDetailPage() {
@@ -49,6 +61,7 @@ export default function PlaylistDetailPage() {
   const [mediaById, setMediaById] = useState<Record<string, Media>>({});
   const [selectedMedia, setSelectedMedia] = useState("");
   const [duration, setDuration] = useState("10");
+  const [validation, setValidation] = useState<Validation | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
@@ -63,8 +76,10 @@ export default function PlaylistDetailPage() {
       for (const item of media) {
         byId[item.id] = item;
       }
-      setMediaById(byId);
-      setError(null);
+       setMediaById(byId);
+       setValidation(await api.get<Validation>(`/api/playlists/${playlistId}/validate`));
+       setError(null);
+
     } catch (err) {
       setError(String((err as Error).message ?? err));
     }
@@ -73,6 +88,15 @@ export default function PlaylistDetailPage() {
   useEffect(() => {
     reload();
   }, [reload]);
+
+  async function publish() {
+    try {
+      await api.post(`/api/playlists/${playlistId}/publish`);
+      await reload();
+    } catch (err) {
+      setError(String((err as Error).message ?? err));
+    }
+  }
 
   async function addItem() {
     if (!selectedMedia) return;
@@ -114,6 +138,27 @@ export default function PlaylistDetailPage() {
     }
   }
 
+  const sortedItems = [...(playlist?.items ?? [])].sort((a, b) => a.position - b.position);
+
+  const { itemProps, overId } = useDragOrder<Item>(
+    sortedItems,
+    (i) => i.id,
+    (next) => {
+      void (async () => {
+        try {
+          const ids = next.map((i) => i.id);
+          const updated = await api.post<PlaylistDetail>(
+            `/api/playlists/${playlistId}/reorder`,
+            ids
+          );
+          setPlaylist(updated);
+        } catch (err) {
+          setError(String((err as Error).message ?? err));
+        }
+      })();
+    }
+  );
+
   if (error && !playlist) {
     return <p className="text-sm text-destructive">{error}</p>;
   }
@@ -121,7 +166,7 @@ export default function PlaylistDetailPage() {
     return <p className="text-sm text-muted-foreground">Chargement…</p>;
   }
 
-  const sorted = [...playlist.items].sort((a, b) => a.position - b.position);
+  const sorted = sortedItems;
 
   return (
     <div className="space-y-6">
@@ -129,12 +174,28 @@ export default function PlaylistDetailPage() {
         <Link href="/playlists" className="text-sm text-muted-foreground hover:underline">
           ← Playlists
         </Link>
-        <h1 className="text-2xl font-bold">{playlist.name}</h1>
+        <div className="flex flex-wrap items-center gap-2">
+          <h1 className="text-2xl font-bold">{playlist.name}</h1>
+          <Badge variant={playlist.draft_changed ? "warning" : "success"}>
+            {playlist.draft_changed ? "Brouillon modifié" : `Publié v${playlist.published_version ?? 0}`}
+          </Badge>
+        </div>
         {playlist.description && (
           <p className="text-sm text-muted-foreground">{playlist.description}</p>
         )}
       </div>
       {error && <p className="text-sm text-destructive">{error}</p>}
+      <div className="flex flex-wrap items-center gap-3 rounded-md border p-3">
+        <span className="text-sm text-muted-foreground">
+          {validation?.item_count ?? sortedItems.length} éléments · environ {validation?.total_duration_seconds ?? 0} s
+        </span>
+        {validation?.errors.map((message) => (
+          <span key={message} className="text-sm text-destructive">{message}</span>
+        ))}
+        <Button onClick={publish} disabled={!validation?.valid || !playlist.draft_changed}>
+          Publier le brouillon
+        </Button>
+      </div>
 
       <Card>
         <CardHeader>
@@ -179,6 +240,9 @@ export default function PlaylistDetailPage() {
       <Card>
         <CardHeader>
           <CardTitle>Séquence ({sorted.length} élément{sorted.length > 1 ? "s" : ""})</CardTitle>
+          <CardDescription>
+            Glissez-déposez les lignes pour changer l&apos;ordre de diffusion.
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <Table>
@@ -195,35 +259,49 @@ export default function PlaylistDetailPage() {
               {sorted.map((item, index) => {
                 const media = mediaById[item.media_id];
                 return (
-                  <TableRow key={item.id}>
-                    <TableCell>{index + 1}</TableCell>
+                  <TableRow
+                    key={item.id}
+                    {...itemProps(item.id)}
+                    className={
+                      "cursor-grab active:cursor-grabbing transition-colors" +
+                      (overId === item.id
+                        ? " border-t-2 border-t-primary bg-primary/5"
+                        : "")
+                    }
+                  >
+                    <TableCell className="whitespace-nowrap">
+                      <GripVertical className="mr-1 inline h-4 w-4 text-muted-foreground" aria-hidden />
+                      {index + 1}
+                    </TableCell>
                     <TableCell className="font-medium">{media?.name ?? item.media_id}</TableCell>
                     <TableCell>{media?.kind ?? "—"}</TableCell>
                     <TableCell>
                       {item.duration_seconds ? `${item.duration_seconds} s` : "fin de lecture"}
                     </TableCell>
-                    <TableCell className="space-x-1 text-right">
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        disabled={index === 0}
-                        onClick={() => move(item, -1)}
-                        aria-label="Monter"
-                      >
-                        <ArrowUp />
-                      </Button>
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        disabled={index === sorted.length - 1}
-                        onClick={() => move(item, 1)}
-                        aria-label="Descendre"
-                      >
-                        <ArrowDown />
-                      </Button>
-                      <Button size="sm" variant="destructive" onClick={() => removeItem(item)}>
-                        Retirer
-                      </Button>
+                    <TableCell className="text-right">
+                      <div className="flex flex-wrap items-center justify-end gap-1">
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          disabled={index === 0}
+                          onClick={() => move(item, -1)}
+                          aria-label="Monter"
+                        >
+                          <ArrowUp />
+                        </Button>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          disabled={index === sorted.length - 1}
+                          onClick={() => move(item, 1)}
+                          aria-label="Descendre"
+                        >
+                          <ArrowDown />
+                        </Button>
+                        <Button size="sm" variant="destructive" onClick={() => removeItem(item)}>
+                          Retirer
+                        </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 );

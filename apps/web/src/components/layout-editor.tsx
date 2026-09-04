@@ -141,7 +141,7 @@ export function LayoutEditor({
               Retirer
             </Button>
           </div>
-          <div className="grid grid-cols-4 gap-2">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             {(["x", "y", "w", "h"] as const).map((k) => (
               <div key={k} className="space-y-1">
                 <Label className="text-xs">{k.toUpperCase()} %</Label>

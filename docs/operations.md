@@ -22,6 +22,15 @@ quotas par organisation.
 | Forcer une resynchronisation | Commande `resync` |
 | Éteindre l'écran (nuit) | Commandes `blank` / `unblank` |
 | Preuve de diffusion | Commande `capture` |
+| Afficher immédiatement un média | Médias → « Afficher » (commande `show` + téléchargement direct) |
+
+## Stockage & isolation des médias
+
+Chaque utilisateur dispose d'un espace personnel de **15 Go**
+(`ELYON_USER_QUOTA_BYTES`), non partagé : chacun ne voit que ses propres
+médias et ne peut pas afficher/ajouter les médias d'autrui. Le superadmin
+lui-même ne peut pas accéder aux médias des autres utilisateurs (listage et
+téléchargement exclus). L'upload au-delà du quota renvoie `413`.
 
 ## Publication
 

@@ -111,6 +111,7 @@ class MediaStore:
             "version": payload.get("published_at"),
             "media": media,
             "blocks": payload.get("blocks", []),
+            "widgets": payload.get("widgets") or [],
         }
 
     def activate(self, release: Path) -> None:
@@ -173,6 +174,9 @@ class MediaStore:
         """Supprime blobs non référencés et releases anciennes ; retourne octets libérés."""
         freed = 0
         keep_release_paths = {p.resolve() for p in self.list_releases()[-keep_releases:]}
+        current = self.current_release()
+        if current is not None:
+            keep_release_paths.add(current.resolve())
         for release in self.list_releases():
             if release.resolve() in keep_release_paths:
                 continue
@@ -315,6 +319,115 @@ class Synchronizer:
 
 def storage_free_bytes(path: Path) -> int:
     return shutil.disk_usage(path).free
+
+
+def system_telemetry(data_dir: Path) -> dict[str, Any]:
+    """Métriques système du player (uptime, charge, mémoire, CPU, IP LAN).
+
+    Chaque valeur est `None` quand elle ne peut pas être lue (ne jamais
+    affirmer ce qu'on ne sait pas). Invoqué à chaque heartbeat.
+    """
+    uptime_seconds: int | None = None
+    load_avg: float | None = None
+    memory_percent: float | None = None
+    cpu_percent: float | None = None
+
+    try:
+        with open("/proc/uptime", encoding="utf-8") as f:
+            uptime_seconds = int(float(f.read().split()[0]))
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        with open("/proc/loadavg", encoding="utf-8") as f:
+            load_avg = float(f.read().split()[0])
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        total = 0
+        free = 0
+        with open("/proc/meminfo", encoding="utf-8") as f:
+            for line in f:
+                key, _, value = line.partition(":")
+                val = int(value.split()[0])
+                if key == "MemTotal":
+                    total = val
+                elif key == "MemAvailable":
+                    free = val
+        if total:
+            memory_percent = round((1 - free / total) * 100, 1)
+    except (OSError, ValueError):
+        pass
+    try:
+        cpu = _read_cpu_percent()
+        if cpu is not None:
+            cpu_percent = cpu
+    except Exception:  # noqa: BLE001
+        pass
+
+    return {
+        "uptime_seconds": uptime_seconds,
+        "load_avg": load_avg,
+        "memory_percent": memory_percent,
+        "cpu_percent": cpu_percent,
+        "lan_ip": _lan_ip(),
+        "wifi_ssid": _wifi_ssid(),
+        "storage_free_bytes": storage_free_bytes(data_dir),
+    }
+
+
+_cpu_sample: dict[str, float] = {}
+
+
+def _read_cpu_percent() -> float | None:
+    """Consommation CPU depuis le dernier appel (échantillon /proc/stat)."""
+    global _cpu_sample
+    try:
+        with open("/proc/stat", encoding="utf-8") as f:
+            first = f.readline().split()
+    except OSError:
+        return None
+    if not first or first[0] != "cpu":
+        return None
+    vals = [float(v) for v in first[1:]]
+    idle = vals[3] + (vals[4] if len(vals) > 4 else 0)
+    total = sum(vals)
+    prev = _cpu_sample
+    _cpu_sample = {"idle": idle, "total": total}
+    if not prev or total <= prev["total"]:
+        return None
+    idle_delta = idle - prev["idle"]
+    total_delta = total - prev["total"]
+    return round(max(0.0, 1 - idle_delta / total_delta) * 100, 1)
+
+
+def _lan_ip() -> str | None:
+    """IP LAN du player (la première adresse IPv4 non-loopback)."""
+    import socket
+
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("10.255.255.255", 1))  # n'envoie rien (UDP)
+            address = s.getsockname()[0]
+            return address if isinstance(address, str) else None
+        finally:
+            s.close()
+    except OSError:
+        return None
+
+
+def _wifi_ssid() -> str | None:
+    """SSID Wi-Fi courant, si lisible (Linux)."""
+    try:
+        import subprocess
+
+        out = subprocess.run(
+            ["iwgetid", "-r"], capture_output=True, timeout=3, check=False
+        )
+        ssid = out.stdout.decode().strip()
+        return ssid or None
+    except (OSError, subprocess.TimeoutExpired):
+        return None
 
 
 def sync_from_manifest(

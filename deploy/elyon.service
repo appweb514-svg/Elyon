@@ -1,0 +1,19 @@
+# Legacy : monolithe web + players. Préférer la séparation :
+# elyon-web.service (stack web) + elyon-players.service (players émulés).
+[Unit]
+Description=Elyon — affichage dynamique + Raspberry émulés
+After=network.target tailscaled.service
+
+[Service]
+Type=simple
+WorkingDirectory=/root/.kandev/tasks/reprend-le-projet-el_2tgbb9vb/appweb514-svg-Elyon
+ExecStart=/bin/sh player/lab/run-hosted.sh
+Restart=always
+RestartSec=5
+Environment=PYTHON=/root/.kandev/tasks/reprend-le-projet-el_2tgbb9vb/appweb514-svg-Elyon/.venv/bin/python
+Environment=ELYON_WEB_PORT=5140
+Environment=ELYON_API_PORT=8000
+Environment=ELYON_PUBLIC_WEB_URL=https://vps-901.tailda1dd3.ts.net:5140
+
+[Install]
+WantedBy=multi-user.target

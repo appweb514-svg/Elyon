@@ -15,6 +15,7 @@ from elyon_api.schemas import (
     ScreenPatch,
     SiteCreate,
     SiteOut,
+    WidgetOut,
 )
 
 router = APIRouter(prefix="/api", tags=["sites"])
@@ -69,13 +70,20 @@ def _get_site(db: Session, user: User, site_id: str) -> Site:
 
 def _screen_to_out(screen: Screen) -> ScreenOut:
     out = ScreenOut.model_validate(screen)
-    if screen.layout_json:
-        import json as _json
+    import json as _json
 
+    if screen.layout_json:
         try:
             out.layout = ScreenLayout.model_validate(_json.loads(screen.layout_json))
         except Exception:
             out.layout = None
+    if screen.widgets_json:
+        try:
+            out.widgets = [
+                WidgetOut.model_validate(w) for w in _json.loads(screen.widgets_json)
+            ]
+        except Exception:
+            out.widgets = None
     return out
 
 
@@ -193,6 +201,15 @@ def patch_screen(
             screen.layout_json = _json.dumps(raw)
         else:
             screen.layout_json = None
+    # widgets → widgets_json
+    if "widgets" in data:
+        import json as _json
+
+        widgets_val = data.pop("widgets")
+        if widgets_val is not None:
+            screen.widgets_json = _json.dumps(widgets_val)
+        else:
+            screen.widgets_json = None
     if "device_id" in data and data["device_id"] is not None:
         # screen.assign permission for device assignment
         from elyon_api.permissions import Permission as _Perm
@@ -223,3 +240,21 @@ def delete_screen(
     db.commit()
     audit(db, "screen.delete", "screen", screen_id, user=user)
     db.commit()
+
+@router.get("/widgets/feed")
+def widget_feed(
+    type: str,
+    q: str | None = None,
+    url: str | None = None,
+    lat: float | None = None,
+    lon: float | None = None,
+    user: User = Depends(require_permission(Permission.SCREEN_VIEW)),
+) -> dict:
+    """Données pour les widgets d'écran (aperçu back-office + player).
+
+    - Météo : Open-Meteo (gratuit, sans clé) via nom de ville ou lat/lon ;
+    - RSS : les derniers titres d'un flux (parsing XML stdlib).
+    """
+    from elyon_api.services.widget_feed import widget_feed_data
+
+    return widget_feed_data(type=type, q=q, url=url, lat=lat, lon=lon)

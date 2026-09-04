@@ -36,6 +36,7 @@ def test_migration_idempotent(tmp_path):
         "media",
         "playlists",
         "playlist_items",
+        "playlist_revisions",
         "schedules",
         "manifests",
         "audit_logs",
@@ -44,6 +45,10 @@ def test_migration_idempotent(tmp_path):
         "media_processing_jobs",
     }
     assert expected.issubset(tables)
+    device_cols = {c["name"] for c in inspector.get_columns("devices")}
+    assert {"player_state", "current_media_id", "is_preview"}.issubset(device_cols)
+    playlist_cols = {c["name"] for c in inspector.get_columns("playlists")}
+    assert "published_revision_id" in playlist_cols
     del os.environ["ELYON_DATABASE_URL"]
     del os.environ["ELYON_SIGNING_KEY_FILE"]
     del os.environ["ELYON_MEDIA_STORAGE_ROOT"]

@@ -1,0 +1,8 @@
+# Overlay optionnel : exécute les players en linux/arm64 (QEMU user-mode).
+# Prérequis : docker run --privileged --rm tonistiigi/binfmt --install arm64
+
+services:
+  player-1:
+    platform: linux/arm64
+  player-2:
+    platform: linux/arm64

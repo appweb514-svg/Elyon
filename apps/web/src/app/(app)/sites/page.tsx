@@ -109,7 +109,7 @@ export default function SitesPage() {
           {sites.map((site) => (
             <div
               key={site.id}
-              className="flex items-center justify-between rounded-md border p-3"
+              className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3"
             >
               <div>
                 <Link href={`/sites/${site.id}`} className="font-medium hover:underline">

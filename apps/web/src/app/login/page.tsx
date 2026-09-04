@@ -1,7 +1,8 @@
 "use client";
 
 import { useRouter, useSearchParams } from "next/navigation";
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
+import { Activity, MonitorSmartphone } from "lucide-react";
 import { api, ApiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,6 +18,15 @@ import {
 export default function LoginPage() {
   const router = useRouter();
   const params = useSearchParams();
+  const loginDisabled = process.env.ELYON_DISABLE_LOGIN === "1";
+
+  useEffect(() => {
+    if (loginDisabled) {
+      const next = params.get("next") ?? "/";
+      router.replace(`/api/auth/auto-login?next=${encodeURIComponent(next)}`);
+    }
+  }, [loginDisabled, params, router]);
+
   const [mode, setMode] = useState<"login" | "bootstrap">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -65,10 +75,17 @@ export default function LoginPage() {
     }
   }
 
+  if (loginDisabled) {
+    return null;
+  }
+
   return (
-    <div className="flex min-h-screen items-center justify-center p-4">
-      <Card className="w-full max-w-md">
+    <div className="relative flex min-h-screen items-center justify-center p-4">
+      <Card className="animate-enter relative z-10 w-full max-w-md shadow-xl">
         <CardHeader>
+          <div className="mb-2 flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-indigo-600 shadow-lg shadow-primary/30">
+            <Activity className="h-6 w-6 text-primary-foreground" />
+          </div>
           <CardTitle className="text-2xl">Elyon</CardTitle>
           <CardDescription>
             {mode === "login"
@@ -143,6 +160,10 @@ export default function LoginPage() {
               ? "Première installation ?"
               : "J'ai déjà un compte"}
           </button>
+          <p className="mt-6 flex items-center justify-center gap-2 text-center text-xs text-muted-foreground">
+            <MonitorSmartphone className="h-3.5 w-3.5" />
+            Pilotez vos écrans d&apos;affichage depuis un seul endroit
+          </p>
         </CardContent>
       </Card>
     </div>

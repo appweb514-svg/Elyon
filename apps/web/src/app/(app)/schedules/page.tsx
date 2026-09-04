@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/table";
 
 type Site = { id: string; name: string };
+type Device = { id: string; name: string; site_id: string | null; status: string; is_preview?: boolean };
 type Playlist = { id: string; name: string };
 type Schedule = {
   id: string;
@@ -35,12 +36,14 @@ type Schedule = {
   end_at: string;
   priority: number;
   is_active: boolean;
+  device_id: string | null;
 };
 
 export default function SchedulesPage() {
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [sites, setSites] = useState<Site[]>([]);
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
+  const [devices, setDevices] = useState<Device[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const [name, setName] = useState("");
@@ -49,17 +52,24 @@ export default function SchedulesPage() {
   const [priority, setPriority] = useState("0");
   const [startAt, setStartAt] = useState("");
   const [endAt, setEndAt] = useState("");
+  const [targetScreen, setTargetScreen] = useState("");
 
   const reload = useCallback(async () => {
     try {
-      const [scheduleList, siteList, playlistList] = await Promise.all([
+      const [scheduleList, siteList, playlistList, deviceList] = await Promise.all([
         api.get<Schedule[]>("/api/schedules"),
         api.get<Site[]>("/api/sites"),
         api.get<Playlist[]>("/api/playlists"),
+        api.get<Device[]>("/api/devices").catch(() => [] as Device[]),
       ]);
       setSchedules(scheduleList);
       setSites(siteList);
       setPlaylists(playlistList);
+      setDevices(
+        (deviceList as Device[]).filter(
+          (d) => d.status !== "pending" && d.status !== "blocked" && d.status !== "disabled"
+        )
+      );
       if (!siteId && siteList.length > 0) {
         setSiteId(siteList[0].id);
       }
@@ -90,6 +100,7 @@ export default function SchedulesPage() {
         start_at: new Date(startAt).toISOString(),
         end_at: new Date(endAt).toISOString(),
         priority: Number.parseInt(priority, 10) || 0,
+        device_id: targetScreen || null,
       });
       setName("");
       await reload();
@@ -178,11 +189,25 @@ export default function SchedulesPage() {
             />
           </div>
           <Button onClick={create}>Créer</Button>
-          <div className="space-y-2 md:col-span-2">
+          <div className="space-y-2">
+            <Label htmlFor="sc-screen">Écran</Label>
+            <Select id="sc-screen" value={targetScreen} onChange={(e) => setTargetScreen(e.target.value)}>
+              <option value="">Tous les écrans du site</option>
+              {(devices as Device[])
+                .filter((d) => !d.site_id || d.site_id === siteId)
+                .map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.name}{d.is_preview ? " (aperçu)" : ""}
+                  </option>
+                ))}
+            </Select>
+          </div>
+          <div className="space-y-2">
             <Label htmlFor="sc-start">Début</Label>
             <Input
               id="sc-start"
               type="datetime-local"
+              step="1"
               value={startAt}
               onChange={(e) => setStartAt(e.target.value)}
             />
@@ -220,7 +245,11 @@ export default function SchedulesPage() {
               {schedules.map((schedule) => (
                 <TableRow key={schedule.id}>
                   <TableCell className="font-medium">{schedule.name}</TableCell>
-                  <TableCell>{siteNames[schedule.site_id] ?? schedule.site_id}</TableCell>
+                  <TableCell>
+                    {schedule.device_id
+                      ? `Écran : ${(devices as Device[]).find((d) => d.id === schedule.device_id)?.name ?? schedule.device_id}`
+                      : siteNames[schedule.site_id] ?? schedule.site_id}
+                  </TableCell>
                   <TableCell>{playlistNames[schedule.playlist_id] ?? schedule.playlist_id}</TableCell>
                   <TableCell className="whitespace-nowrap text-xs">
                     {formatDate(schedule.start_at)}
@@ -234,13 +263,15 @@ export default function SchedulesPage() {
                       {schedule.is_active ? "actif" : "inactif"}
                     </Badge>
                   </TableCell>
-                  <TableCell className="space-x-2 text-right">
-                    <Button size="sm" variant="outline" onClick={() => toggle(schedule)}>
-                      {schedule.is_active ? "Désactiver" : "Activer"}
-                    </Button>
-                    <Button size="sm" variant="destructive" onClick={() => remove(schedule)}>
-                      Supprimer
-                    </Button>
+                  <TableCell className="text-right">
+                    <div className="flex flex-wrap justify-end gap-2">
+                      <Button size="sm" variant="outline" onClick={() => toggle(schedule)}>
+                        {schedule.is_active ? "Désactiver" : "Activer"}
+                      </Button>
+                      <Button size="sm" variant="destructive" onClick={() => remove(schedule)}>
+                        Supprimer
+                      </Button>
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}

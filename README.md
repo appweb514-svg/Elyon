@@ -26,5 +26,12 @@ Elyon est un serveur central multi-utilisateur qui pilote des players Raspberry 
 - `make lint` — lint Python (ruff) et Web (eslint)
 - `make test` — tests Python (pytest) et Web (vitest)
 - `make dev` — démarre l'environnement local avec Docker Compose
+- `make lab` — API + back-office + 2 Raspberry Pi émulés (enrôlés et publiés)
+- `make lab-arm` — idem en `linux/arm64` (QEMU user-mode, comme un Pi 4/5)
+- `make lab-local` — même cycle sur l'hôte (sqlite, sans build d'images)
+- `make lab-hosted` — back-office sur le port 5140 (dashboard Tailscale)
+- `make lab-down` — arrête le lab Docker
 
-Statut : lot 0 (socle).
+Le lab sans matériel est décrit dans `docs/lab.md`.
+
+Statut : lots 0–14 + lab Raspberry émulé.

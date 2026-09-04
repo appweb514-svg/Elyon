@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from elyon_api.db import get_db
 from elyon_api.deps import audit, get_current_user
 from elyon_api.models import Role, User
-from elyon_api.schemas import LoginRequest, UserOut
+from elyon_api.schemas import LoginRequest, ProfilePatch, UserOut
 from elyon_api.security import (
     hash_password,
     new_csrf_token,
@@ -98,4 +98,55 @@ def logout(request: Request, response: Response) -> dict:
 
 @router.get("/me")
 def me(user: User = Depends(get_current_user)) -> UserOut:
+    return UserOut.model_validate(user)
+
+
+@router.patch("/me")
+def patch_me(
+    body: ProfilePatch,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> UserOut:
+    """Modification de son propre profil : nom complet, email, mot de passe.
+
+    Le changement de mot de passe exige le mot de passe actuel ; un changement
+    d'email re-vérifie l'unicité et invalide la session (reconnexion).
+    """
+    data = body.model_dump(exclude_none=True)
+    if not data:
+        raise HTTPException(status_code=422, detail="Aucune modification fournie")
+    email_changed = False
+    if "password" in data:
+        if "current_password" not in data or not verify_password(
+            data["current_password"], user.password_hash
+        ):
+            raise HTTPException(
+                status_code=403, detail="Mot de passe actuel incorrect"
+            )
+        user.password_hash = hash_password(data.pop("password"))
+        data.pop("current_password", None)
+    if "email" in data:
+        new_email = str(data.pop("email")).lower().strip()
+        if new_email != user.email:
+            if db.scalar(select(User).where(User.email == new_email)):
+                raise HTTPException(status_code=409, detail="Email déjà utilisé")
+            user.email = new_email
+            email_changed = True
+    if "full_name" in data:
+        user.full_name = str(data.pop("full_name")).strip()
+    if data:
+        raise HTTPException(status_code=422, detail="Champ(s) inconnu(s)")
+    db.commit()
+    db.refresh(user)
+    audit(
+        db,
+        "profile.update",
+        "user",
+        user.id,
+        detail="password" if email_changed else "profil",
+        user=user,
+        ip=request.client.host if request.client else None,
+    )
+    db.commit()
     return UserOut.model_validate(user)

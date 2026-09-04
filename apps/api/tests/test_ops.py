@@ -91,7 +91,59 @@ def test_dashboard(client):
     body = dash.json()
     assert body["devices_total"] == 1
     assert body["devices_pending"] == 0
+    assert "devices_offline" in body
+    assert "media_ready" in body
+    assert "media_bytes" in body
+    assert "events_24h" in body
+    assert "events_warning_24h" in body
     assert "recent_events" in body
+
+
+def test_audit_logs(client):
+    bootstrap_superadmin(client)
+    login(client)
+    org = create_org(client, "AuditCo")
+    login_as_org_admin(client, org, "audit@org.test")
+    site = auth_json(client, "POST", "/api/sites", json={"name": "S1"}).json()
+    page = client.get("/api/audit/logs?limit=20&offset=0")
+    assert page.status_code == 200
+    body = page.json()
+    assert body["total"] > 0
+    entries = body["items"]
+    created_site = next(e for e in entries if e["action"] == "site.create")
+    assert created_site["resource_type"] == "site"
+    assert created_site["resource_id"] == site["id"]
+    by_action = client.get("/api/audit/logs?action=site.create&limit=20").json()
+    assert {e["resource_id"] for e in by_action["items"]} == {site["id"]}
+    # Pagination : bornes cohérentes.
+    paged = client.get("/api/audit/logs?limit=50&offset=0").json()
+    assert paged["limit"] == 50
+    assert len(paged["items"]) <= 50
+
+
+def test_superadmin_media_upload_requires_and_accepts_target_org(client):
+    bootstrap_superadmin(client)
+    login(client)
+    org = create_org(client, "MediaCo")
+
+    missing_org = auth_json(
+        client,
+        "POST",
+        "/api/media",
+        files={"file": ("tiny.png", b"not-empty", "image/png")},
+    )
+    assert missing_org.status_code == 201, missing_org.text
+    assert missing_org.json()["org_id"] == org["id"]
+
+    uploaded = auth_json(
+        client,
+        "POST",
+        "/api/media",
+        data={"org_id": org["id"], "name": "Logo"},
+        files={"file": ("tiny.png", b"not-empty", "image/png")},
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    assert uploaded.json()["org_id"] == org["id"]
 
 
 def test_viewer_cannot_issue_commands(client):

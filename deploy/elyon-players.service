@@ -1,0 +1,16 @@
+[Unit]
+Description=Elyon — players émulés (services Linux)
+After=network.target elyon-web.service
+Wants=elyon-web.service
+
+[Service]
+Type=simple
+WorkingDirectory=/root/.kandev/tasks/reprend-le-projet-el_2tgbb9vb/appweb514-svg-Elyon
+ExecStart=/bin/sh player/lab/run-players.sh
+Restart=always
+RestartSec=5
+Environment=PYTHON=/root/.kandev/tasks/reprend-le-projet-el_2tgbb9vb/appweb514-svg-Elyon/.venv/bin/python
+Environment=ELYON_API_PORT=8000
+
+[Install]
+WantedBy=multi-user.target

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api, formatDate } from "@/lib/api";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { OrgScopeNotice } from "@/components/org-scope-notice";
 import {
@@ -21,6 +22,8 @@ type Playlist = {
   name: string;
   description: string | null;
   created_at: string;
+  team_id?: string | null;
+  team_name?: string | null;
 };
 
 export default function PlaylistsPage() {
@@ -111,15 +114,22 @@ export default function PlaylistsPage() {
           {playlists.map((playlist) => (
             <div
               key={playlist.id}
-              className="flex items-center justify-between rounded-md border p-3"
+              className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3"
             >
               <div>
-                <Link
-                  href={`/playlists/${playlist.id}`}
-                  className="font-medium hover:underline"
-                >
-                  {playlist.name}
-                </Link>
+                <span className="flex flex-wrap items-center gap-2">
+                  <Link
+                    href={`/playlists/${playlist.id}`}
+                    className="font-medium hover:underline"
+                  >
+                    {playlist.name}
+                  </Link>
+                  {playlist.team_id ? (
+                    <Badge variant="secondary">Équipe · {playlist.team_name ?? "—"}</Badge>
+                  ) : (
+                    <Badge variant="outline">Générale</Badge>
+                  )}
+                </span>
                 {playlist.description && (
                   <p className="text-xs text-muted-foreground">{playlist.description}</p>
                 )}
