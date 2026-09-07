@@ -23,6 +23,8 @@ services:
 
   api:
     build: ./apps/api
+    expose:
+      - "8000"
     environment:
       ELYON_DATABASE_URL: ${ELYON_DATABASE_URL:-postgresql://elyon:CHANGE_ME@db:5432/elyon}
       ELYON_REDIS_URL: ${ELYON_REDIS_URL:-redis://redis:6379/0}
@@ -31,8 +33,14 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    ports:
-      - "8000:8000"
+    networks: [default, dokploy-network]
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      - traefik.http.routers.elyon-api.rule=Host(`elyon-api.int.labvirtuel.fr`)
+      - traefik.http.routers.elyon-api.entrypoints=web
+      - traefik.http.routers.elyon-api.middlewares=elyon-private
+      - traefik.http.middlewares.elyon-private.ipallowlist.sourcerange=10.0.0.0/8,172.16.0.0/12
 
   worker:
     build:
@@ -46,11 +54,25 @@ services:
         condition: service_started
 
   web:
-    build: ./apps/web
+    build:
+      context: ./apps/web
+      args:
+        NEXT_PUBLIC_API_URL: http://elyon-api.int.labvirtuel.fr
+    expose:
+      - "3000"
     environment:
-      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
-    ports:
-      - "127.0.0.1:3001:3000"
+      NEXT_PUBLIC_API_URL: http://elyon-api.int.labvirtuel.fr
+    networks: [default, dokploy-network]
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      - traefik.http.routers.elyon-web.rule=Host(`elyon.int.labvirtuel.fr`)
+      - traefik.http.routers.elyon-web.entrypoints=web
+      - traefik.http.routers.elyon-web.middlewares=elyon-private
 
 volumes:
   pgdata:
+
+networks:
+  dokploy-network:
+    external: true
