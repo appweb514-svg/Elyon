@@ -911,6 +911,48 @@ def admin_wall(
 
 
 
+IDLE_SCREEN_HTML = """<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Affichage en préparation</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body {
+    display: flex; align-items: center; justify-content: center;
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: linear-gradient(120deg, #0f172a, #1e1b4b, #0c4a6e, #1e1b4b, #0f172a);
+    background-size: 300% 300%;
+    animation: pan 18s ease-in-out infinite;
+    color: #e2e8f0;
+  }
+  @keyframes pan { 0%,100% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } }
+  .orb { position: fixed; border-radius: 50%; filter: blur(60px); opacity: .35; animation: orb 12s ease-in-out infinite; }
+  .orb.a { width: 24vmax; height: 24vmax; left: 8%; top: 15%; background: #0ea5e9; }
+  .orb.b { width: 30vmax; height: 30vmax; right: 10%; top: 55%; background: #6366f1; animation-delay: 3s; }
+  .orb.c { width: 20vmax; height: 20vmax; left: 45%; bottom: 10%; background: #22d3ee; animation-delay: 6s; }
+  @keyframes orb { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(24px,-18px) scale(1.15); } }
+  h1 { font-size: clamp(20px, 4vw, 48px); font-weight: 600; letter-spacing: .04em;
+       animation: pulse 3.2s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: .65; } 50% { opacity: 1; } }
+  .ticker { position: fixed; bottom: 0; left: 0; right: 0; overflow: hidden;
+            background: rgba(0,0,0,.7); padding: .6rem 1rem; font-size: 16px; white-space: nowrap; }
+  .ticker span { display: inline-block; position: relative; animation: slide 14s linear infinite; }
+  @keyframes slide { from { left: -100%; } to { left: 100%; } }
+  @media (prefers-reduced-motion: reduce) { body, .orb, h1, .ticker span { animation: none !important; } }
+</style>
+</head>
+<body>
+  <span class="orb a"></span><span class="orb b"></span><span class="orb c"></span>
+  <h1>Affichage en préparation</h1>
+  __TICKER__
+</body>
+</html>
+"""
+
+
 def _screen_ticker(device: Device) -> tuple[str | None, str | None]:
     """Texte du widget « texte déroulant » (ou texte libre) de l'écran du device.
 
