@@ -48,7 +48,7 @@ def _lab_site(db: Session, org: Organization, settings: Settings) -> Site:
     return site
 
 
-def _write_code_files(settings: Settings, code: str, serials: list[str]) -> list[str]:
+def _write_code_files(settings: Settings, codes: dict[str, str]) -> list[str]:
     root = Path(settings.lab_enroll_dir)
     try:
         root.mkdir(parents=True, exist_ok=True)
@@ -58,7 +58,7 @@ def _write_code_files(settings: Settings, code: str, serials: list[str]) -> list
             detail=f"Impossible d'écrire dans {root} ({exc}) — vérifier le volume et les droits",
         ) from exc
     written: list[str] = []
-    for serial in serials:
+    for serial, code in codes.items():
         path = root / f"{serial}.code"
         path.write_text(code + "\n", encoding="utf-8")
         path.chmod(0o644)
@@ -81,24 +81,29 @@ def install(
     org = _lab_org(db, settings)
     site = _lab_site(db, org, settings)
     now = dt.datetime.now(dt.UTC)
-    code = new_short_code()
-    token = EnrollmentToken(
-        site_id=site.id,
-        code_hash=hash_code(code),
-        expires_at=now + dt.timedelta(seconds=TOKEN_TTL_SECONDS),
-    )
-    db.add(token)
+    expires_at = now + dt.timedelta(seconds=TOKEN_TTL_SECONDS)
+    # Un code PAR player : les tokens d'enrôlement sont à usage unique.
+    codes: dict[str, str] = {}
+    for serial in serials:
+        code = new_short_code()
+        db.add(
+            EnrollmentToken(
+                site_id=site.id,
+                code_hash=hash_code(code),
+                expires_at=expires_at,
+            )
+        )
+        codes[serial] = code
     db.commit()
-    db.refresh(token)
-    written = _write_code_files(settings, code, serials)
+    written = _write_code_files(settings, codes)
     audit(db, "lab.install", "site", site.id, user=user, detail=",".join(serials))
     db.commit()
     return {
         "org": org.slug,
         "site": site.name,
         "site_id": site.id,
-        "code": code,
-        "expires_at": token.expires_at.isoformat(),
+        "codes": codes,
+        "expires_at": expires_at.isoformat(),
         "code_files": written,
     }
 

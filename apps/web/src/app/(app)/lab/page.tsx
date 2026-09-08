@@ -29,7 +29,7 @@ type LabStatus = {
 type InstallResult = {
   org: string;
   site: string;
-  code: string;
+  codes: Record<string, string>;
   expires_at: string;
   code_files: string[];
 };
@@ -114,10 +114,15 @@ export default function LabPage() {
           {result && (
             <div className="rounded-lg border bg-muted/40 p-4 text-sm space-y-1">
               <p>
-                <strong>Code d&apos;enrôlement :</strong>{" "}
-                <code className="rounded bg-muted px-1.5 py-0.5 font-mono">
-                  {result.code}
-                </code>
+                <strong>Codes d&apos;enrôlement :</strong>{" "}
+                {Object.entries(result.codes).map(([serial, code]) => (
+                  <code
+                    key={serial}
+                    className="mr-3 rounded bg-muted px-1.5 py-0.5 font-mono"
+                  >
+                    {serial}: {code}
+                  </code>
+                ))}
               </p>
               <p className="text-muted-foreground">
                 Site : {result.site} (org {result.org}) — expire le{" "}
