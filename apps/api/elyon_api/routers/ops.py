@@ -673,10 +673,9 @@ def wall_device_live(device_id: str, request: Request):
             if video is not None and _ffmpeg_available():
                 path, seek, widgets = video
                 sent = 0
-                device = await loop.run_in_executor(
-                    None, _device_from_factory, db_factory, device_id
+                dims = await loop.run_in_executor(
+                    None, _device_dims_from_factory, db_factory, device_id
                 )
-                dims = _screen_dims(device) if device is not None else None
                 if dims:
                     dims = (min(dims[0], 1280), min(dims[1], 1280))
                 try:
@@ -850,9 +849,11 @@ def _find_player_marker(device: Device) -> tuple[Path, Path] | None:
     return None
 
 
-def _device_from_factory(db_factory, device_id: str) -> Device | None:
+def _device_dims_from_factory(db_factory, device_id: str) -> tuple[int, int] | None:
+    """Taille d'écran du device, résolue DANS la session (lazy loads ok)."""
     with db_factory() as db:
-        return db.get(Device, device_id)
+        device = db.get(Device, device_id)
+        return _screen_dims(device) if device is not None else None
 
 
 def _live_video_state(
