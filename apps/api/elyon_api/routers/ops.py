@@ -1206,6 +1206,19 @@ def _device_widgets(device: Device) -> list[dict[str, Any]]:
     ]
 
 
+def _load_display_font(size: int):
+    """Police d'affichage : DejaVu (accents) si présente, sinon la police PIL."""
+    try:
+        return ImageFont.truetype(
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", size=size
+        )
+    except (OSError, ImportError):
+        try:
+            return ImageFont.load_default(size=size)
+        except TypeError:
+            return ImageFont.load_default()
+
+
 def _compose_widget_bar_server(img: "Image.Image", widgets: list[dict[str, Any]]) -> "Image.Image":
     """Incruste les widgets d'information sur une image (aperçu serveur).
 
@@ -1256,14 +1269,8 @@ def _compose_widget_bar_server(img: "Image.Image", widgets: list[dict[str, Any]]
         if not text:
             continue
         font_size = int(base_size * scale)
-        try:
-            font = ImageFont.load_default(size=font_size)
-        except TypeError:
-            font = ImageFont.load_default()
-        try:
-            small = ImageFont.load_default(size=max(11, int(small_size * scale)))
-        except TypeError:
-            small = font
+        font = _load_display_font(font_size)
+        small = _load_display_font(max(11, int(small_size * scale)))
         if position == "bottom-ticker":
             _draw_server_ticker(draw, img, text, font, max(11, int(small_size * scale)), now, height)
             continue

@@ -9,6 +9,9 @@ COPY player/agent /opt/elyon-src/player/agent
 COPY player/playback /opt/elyon-src/player/playback
 COPY player/lab/entrypoint.sh /usr/local/bin/elyon-player-entrypoint
 
+RUN apt-get update && apt-get install -y --no-install-recommends fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN chmod 0755 /usr/local/bin/elyon-player-entrypoint \
     && pip install --no-cache-dir \
         "httpx>=0.27" \
