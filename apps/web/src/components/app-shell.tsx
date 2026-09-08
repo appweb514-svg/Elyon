@@ -18,6 +18,7 @@ import {
   Users,
   UsersRound,
   Layers,
+  Cpu,
   X,
 } from "lucide-react";
 
@@ -39,6 +40,7 @@ const NAV = [
   { href: "/users", label: "Utilisateurs", icon: Users, perm: "user.view" as const },
   { href: "/teams", label: "Équipes", icon: UsersRound, perm: "user.view" as const },
   { href: "/audit", label: "Audit", icon: ScrollText, perm: "audit.view" as const },
+  { href: "/lab", label: "Pi émulés", icon: Cpu, superadminOnly: true as const },
 ];
 
 type Me = {
@@ -87,7 +89,7 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
 
   return (
     <nav className="flex-1 space-y-1 p-2">
-      {NAV.filter((item) => item.perm === null || hasPermission(role, item.perm)).map((item) => {
+      {NAV.filter((item) => ("superadminOnly" in item && item.superadminOnly ? role === "superadmin" : item.perm === null || hasPermission(role, item.perm))).map((item) => {
         const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
         return (
           <Link

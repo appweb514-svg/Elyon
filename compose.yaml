@@ -30,11 +30,13 @@ services:
       ELYON_SIGNING_KEY_FILE: /var/lib/elyon/signing_key.pem
       ELYON_PUBLIC_BASE_URL: ${ELYON_PUBLIC_BASE_URL:-http://api:8000}
       ELYON_SESSION_SECRET: ${ELYON_SESSION_SECRET:-elyon-lab-secret}
+      ELYON_LAB_ENROLL_DIR: /var/lib/elyon/lab-enroll
       ELYON_ENQUEUE_MEDIA_PROCESSING: "true"
       ELYON_AUTO_MIGRATE: "true"
     volumes:
       - media:/var/lib/elyon/media
       - signing:/var/lib/elyon
+      - ./lab-enroll:/var/lib/elyon/lab-enroll
     depends_on:
       db:
         condition: service_healthy

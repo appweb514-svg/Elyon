@@ -13,6 +13,7 @@ from elyon_api.routers import (
     content,
     enroll,
     groups,
+    lab,
     media,
     ops,
     publish,
@@ -118,6 +119,7 @@ def create_app(app_settings: Settings | None = None, run_migrations: bool = True
     application.include_router(sites.router)
     application.include_router(enroll.router)
     application.include_router(groups.router)
+    application.include_router(lab.router)
     application.include_router(triggers.router)
     application.include_router(media.router)
     application.include_router(teams.router)

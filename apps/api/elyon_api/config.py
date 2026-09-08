@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     enrollment_code_ttl_seconds: int = 600
     offline_grace_seconds: int = 90
     max_login_attempts_per_minute: int = 10
+    lab_enroll_dir: Path = Path("/var/lib/elyon/lab-enroll")
+    lab_player_serials: str = "emu-rpi-1,emu-rpi-2"
+    lab_org_slug: str = "lab"
+    lab_site_name: str = "Écrans lab"
     enqueue_media_processing: bool = True
     process_media_inline: bool = False
     # Alertes offline par e-mail (SMTP). Vide = désactivé.
