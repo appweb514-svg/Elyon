@@ -677,6 +677,8 @@ def wall_device_live(device_id: str, request: Request):
                     None, _device_from_factory, db_factory, device_id
                 )
                 dims = _screen_dims(device) if device is not None else None
+                if dims:
+                    dims = (min(dims[0], 1280), min(dims[1], 1280))
                 try:
                     async for jpeg in _video_mjpeg_parts(path, seek):
                         if widgets:
@@ -1051,6 +1053,8 @@ def _render_live_frame(db_factory, settings, device_id: str) -> bytes | None:
             widgets = _device_widgets(device)
             dims = _screen_dims(device)
             if widgets and dims:
+                # Canevas plafonné : l'aperçu reste fluide même en 4K.
+                dims = (min(dims[0], 1280), min(dims[1], 1280))
                 img = _fit_on_canvas(img, dims[0], dims[1])
                 img = _compose_widget_bar_server(img, widgets, _device_site_tz(device))
             # Plafond de taille pour le flux MJPEG (pages PDF 120 dpi = 1 Mo+).
