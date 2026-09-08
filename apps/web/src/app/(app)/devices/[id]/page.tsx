@@ -81,7 +81,7 @@ type Screen = {
   widgets?: Widget[] | null;
 };
 
-type Media = { id: string; name: string; kind: string };
+type Media = { id: string; name: string; kind: string; org_id?: string };
 type Playlist = { id: string; name: string };
 type PlaylistItem = {
   id: string;
@@ -800,11 +800,13 @@ export default function DeviceDetailPage() {
                     onChange={(e) => setQueueMediaId(e.target.value)}
                   >
                     <option value="">Ajouter un média à la file…</option>
-                    {mediaList.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name}
-                      </option>
-                    ))}
+                    {mediaList
+                      .filter((m) => !device?.org_id || m.org_id === device.org_id)
+                      .map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.name}
+                        </option>
+                      ))}
                   </Select>
                   <Button size="sm" onClick={queueAdd} disabled={!queueMediaId}>
                     Ajouter
