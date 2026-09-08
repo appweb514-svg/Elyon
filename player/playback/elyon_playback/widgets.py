@@ -38,6 +38,10 @@ def widget_text(widget: dict[str, Any], feed: dict[str, Any] | None, now: dateti
         return str(params.get("text") or "")
     if kind == "clock":
         fmt = str(params.get("format") or "HH:MM")
+        if str(params.get("tz") or "site") == "utc":
+            from datetime import timezone as _tz
+
+            now = now.astimezone(_tz.utc) if now.tzinfo else datetime.now(_tz.utc)
         return now.strftime("%H:%M:%S" if fmt == "HH:MM:SS" else "%H:%M")
     if kind == "weather":
         city = str(params.get("city") or "").strip() or "Météo"

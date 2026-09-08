@@ -16,6 +16,8 @@ dependencies = [
     "cryptography",
     "python-multipart",
     "pillow",
+    "pillow-heif",
+    "cairosvg",
     "psycopg2-binary",
 ]
 

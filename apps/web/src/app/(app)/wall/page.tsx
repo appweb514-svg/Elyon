@@ -9,6 +9,8 @@ export type WallFrame = {
   device_id: string;
   name: string;
   serial: string;
+  site_id?: string | null;
+  site_name?: string | null;
   is_preview: boolean;
   status: string;
   computed_status: string;
@@ -21,6 +23,16 @@ export type WallFrame = {
   ticker_text?: string | null;
   ticker_speed?: string | null;
 };
+
+function groupBySite(frames: WallFrame[]): [string, WallFrame[]][] {
+  const groups = new Map<string, WallFrame[]>();
+  for (const f of frames) {
+    const key = f.site_name ?? "Sans site";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(f);
+  }
+  return [...groups.entries()];
+}
 
 function statusVariant(status: string): "success" | "warning" | "destructive" | "secondary" {
   if (status === "online") return "success";
@@ -185,11 +197,21 @@ export default function WallPage() {
         {others.length === 0 ? (
           <p className="text-sm text-muted-foreground">Aucun autre appareil.</p>
         ) : (
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-            {others.map((frame, i) => (
-              <VncWindow key={frame.device_id} frame={frame} delay={i * 60} />
-            ))}
-          </div>
+          groupBySite(others).map(([siteName, frames]) => (
+            <div key={siteName} className="space-y-3">
+              <div className="flex items-center gap-2">
+                <span className="rounded-md bg-muted px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  {siteName}
+                </span>
+                <span className="text-xs text-muted-foreground">{frames.length} écran(s)</span>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                {frames.map((frame, i) => (
+                  <VncWindow key={frame.device_id} frame={frame} delay={i * 60} />
+                ))}
+              </div>
+            </div>
+          ))
         )}
       </section>
     </div>

@@ -204,22 +204,39 @@ export default function SchedulesPage() {
           </div>
           <div className="space-y-2">
             <Label htmlFor="sc-start">Début</Label>
-            <Input
-              id="sc-start"
-              type="datetime-local"
-              step="1"
-              value={startAt}
-              onChange={(e) => setStartAt(e.target.value)}
-            />
+            <div className="flex gap-2">
+              <Input
+                id="sc-start"
+                type="date"
+                value={startAt.slice(0, 10)}
+                onChange={(e) => setStartAt(`${e.target.value}T${startAt.slice(11, 16) || "00:00"}`)}
+              />
+              <Input
+                aria-label="Heure de début"
+                type="time"
+                step="60"
+                value={startAt.slice(11, 16)}
+                onChange={(e) => setStartAt(`${startAt.slice(0, 10) || "1970-01-01"}T${e.target.value}`)}
+              />
+            </div>
           </div>
           <div className="space-y-2 md:col-span-2">
             <Label htmlFor="sc-end">Fin</Label>
-            <Input
-              id="sc-end"
-              type="datetime-local"
-              value={endAt}
-              onChange={(e) => setEndAt(e.target.value)}
-            />
+            <div className="flex gap-2">
+              <Input
+                id="sc-end"
+                type="date"
+                value={endAt.slice(0, 10)}
+                onChange={(e) => setEndAt(`${e.target.value}T${endAt.slice(11, 16) || "00:00"}`)}
+              />
+              <Input
+                aria-label="Heure de fin"
+                type="time"
+                step="60"
+                value={endAt.slice(11, 16)}
+                onChange={(e) => setEndAt(`${endAt.slice(0, 10) || "1970-01-01"}T${e.target.value}`)}
+              />
+            </div>
           </div>
         </CardContent>
       </Card>

@@ -21,7 +21,7 @@ from elyon_api.deps import (
     require_roles,
     require_site_access,
 )
-from elyon_api.services import widget_feed
+from elyon_api.services import playback_state, widget_feed
 from elyon_api.models import (
     AuditLog,
     Command,
@@ -355,6 +355,7 @@ def queue_remove(
         db.add(cmd)
         device.current_media_id = None
         device.player_state = "idle"
+        playback_state.mark_queue_stopped(device.id)
         audit(db, "device.queue_remove_playing", "device", device.id, detail=media_id, user=user)
     else:
         audit(db, "device.queue_remove", "device", device.id, detail=media_id, user=user)
@@ -430,6 +431,7 @@ def queue_stop(
     db.add(cmd)
     device.current_media_id = None
     device.player_state = "idle"
+    playback_state.mark_queue_stopped(device.id)
     audit(db, "device.queue_stop", "device", device.id, user=user)
     db.commit()
     db.refresh(cmd)
@@ -671,11 +673,15 @@ def wall_device_live(device_id: str, request: Request):
             if video is not None and _ffmpeg_available():
                 path, seek, widgets = video
                 sent = 0
+                device = await loop.run_in_executor(
+                    None, _device_from_factory, db_factory, device_id
+                )
+                dims = _screen_dims(device) if device is not None else None
                 try:
                     async for jpeg in _video_mjpeg_parts(path, seek):
                         if widgets:
                             jpeg = await loop.run_in_executor(
-                                None, _overlay_widgets_jpeg, jpeg, widgets
+                                None, _overlay_widgets_jpeg, jpeg, widgets, dims
                             )
                         yield _part(jpeg, "image/jpeg")
                         sent += 1
@@ -840,6 +846,11 @@ def _find_player_marker(device: Device) -> tuple[Path, Path] | None:
         if candidate.exists():
             return root, candidate
     return None
+
+
+def _device_from_factory(db_factory, device_id: str) -> Device | None:
+    with db_factory() as db:
+        return db.get(Device, device_id)
 
 
 def _live_video_state(
@@ -1038,8 +1049,10 @@ def _render_live_frame(db_factory, settings, device_id: str) -> bytes | None:
                 data = f.read()
             img: Image.Image = Image.open(_io.BytesIO(data)).convert("RGB")
             widgets = _device_widgets(device)
-            if widgets:
-                img = _compose_widget_bar_server(img, widgets)
+            dims = _screen_dims(device)
+            if widgets and dims:
+                img = _fit_on_canvas(img, dims[0], dims[1])
+                img = _compose_widget_bar_server(img, widgets, _device_site_tz(device))
             # Plafond de taille pour le flux MJPEG (pages PDF 120 dpi = 1 Mo+).
             img.thumbnail((1280, 1280))
             buf = _io.BytesIO()
@@ -1107,9 +1120,7 @@ _player_frame_cache: dict[str, tuple[bytes | None, float]] = {}
 # le rendu vidéo côté serveur (fallback sans capture du player).
 _video_start: dict[str, tuple[str, float]] = {}
 
-# device_id → (media_id, monotonic_start, seuil_secondes) : auto-enchaînement
-# de la file de diffusion (le média suivant démarre en fin de lecture).
-_queue_cursor: dict[str, tuple[str, float, float | None]] = {}
+# Curseur + gel d'auto-enchaînement (module partagé, voir playback_state).
 
 
 def _queue_advance_if_needed(db: Session, device: Device) -> None:
@@ -1121,11 +1132,13 @@ def _queue_advance_if_needed(db: Session, device: Device) -> None:
     """
     if device.player_state != "playing" or not device.current_media_id:
         return
+    if not playback_state.auto_advance_allowed(device.id):
+        return
     items = _device_queue_items(device)
     if len(items) < 2 or items[0]["media_id"] != device.current_media_id:
         return
     now = time.monotonic()
-    cursor = _queue_cursor.get(device.id)
+    cursor = playback_state.queue_cursor.get(device.id)
     if cursor is None or cursor[0] != device.current_media_id:
         # Nouvelle lecture : calculer le seuil de durée.
         threshold: float | None = 10.0  # image sans durée explicite
@@ -1143,7 +1156,7 @@ def _queue_advance_if_needed(db: Session, device: Device) -> None:
                 threshold = None
             if threshold is None:
                 threshold = 30.0
-        _queue_cursor[device.id] = (device.current_media_id, now, threshold)
+        playback_state.queue_cursor[device.id] = (device.current_media_id, now, threshold)
         return
     _, started, threshold = cursor
     if threshold is None or now - started < threshold:
@@ -1174,7 +1187,7 @@ def _queue_advance_if_needed(db: Session, device: Device) -> None:
     db.add(cmd)
     device.current_media_id = media.id
     device.player_state = "playing"
-    _queue_cursor[device.id] = (media.id, now, 10.0)
+    playback_state.queue_cursor[device.id] = (media.id, now, 10.0)
     audit(db, "device.queue_auto_next", "device", device.id, detail=media.name)
 
 
@@ -1218,11 +1231,14 @@ def admin_wall(
     items = []
     for device in db.scalars(stmt):
         media = db.get(Media, device.current_media_id) if device.current_media_id else None
+        site = device.site
         items.append(
             {
                 "device_id": device.id,
                 "name": device.name,
                 "serial": device.serial,
+                "site_id": site.id if site else None,
+                "site_name": site.name if site else None,
                 "is_preview": bool(device.is_preview),
                 "status": device.status.value,
                 "computed_status": _device_status(device, now, settings.offline_grace_seconds),
@@ -1339,7 +1355,47 @@ def _load_display_font(size: int):
             return ImageFont.load_default()
 
 
-def _compose_widget_bar_server(img: "Image.Image", widgets: list[dict[str, Any]]) -> "Image.Image":
+
+def _screen_dims(device: Device) -> tuple[int, int] | None:
+    screen = device.screen
+    if screen is None:
+        return None
+    try:
+        w, h = int(screen.width), int(screen.height)
+        return (w, h) if w > 0 and h > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _fit_on_canvas(img: "Image.Image", width: int, height: int) -> "Image.Image":
+    """Cadre le média dans la taille de l'écran (object-contain, fond noir).
+
+    Les widgets sont ensuite composés sur ce canevas : taille et position
+    constantes quel que soit le média affiché.
+    """
+    from PIL import Image as _Image
+
+    if (img.width, img.height) == (width, height):
+        return img
+    canvas = _Image.new("RGB", (width, height), (8, 10, 14))
+    scale = min(width / img.width, height / img.height)
+    new_size = (max(1, int(img.width * scale)), max(1, int(img.height * scale)))
+    resized = img.resize(new_size)
+    canvas.paste(resized, ((width - new_size[0]) // 2, (height - new_size[1]) // 2))
+    return canvas
+
+
+def _device_site_tz(device: Device) -> str:
+    try:
+        tz = device.screen.site.timezone if device.screen and device.screen.site else None
+        return tz or "Europe/Paris"
+    except Exception:  # noqa: BLE001
+        return "Europe/Paris"
+
+
+def _compose_widget_bar_server(
+    img: "Image.Image", widgets: list[dict[str, Any]], site_tz: str = "Europe/Paris"
+) -> "Image.Image":
     """Incruste les widgets d'information sur une image (aperçu serveur).
 
     Version légère du rendu du player : météo, horloge, texte, ticker
@@ -1378,7 +1434,18 @@ def _compose_widget_bar_server(img: "Image.Image", widgets: list[dict[str, Any]]
             text = line1 if not line2 else line1 + "\n" + line2
         elif kind == "clock":
             fmt = str(params.get("format") or "HH:MM")
-            text = now.strftime("%H:%M:%S" if fmt == "HH:MM:SS" else "%H:%M")
+            if str(params.get("tz") or "site") == "utc":
+                from datetime import timezone as _tz
+
+                now_w = dt.datetime.now(_tz.utc)
+            else:
+                try:
+                    from zoneinfo import ZoneInfo
+
+                    now_w = dt.datetime.now(ZoneInfo(site_tz))
+                except Exception:  # noqa: BLE001
+                    now_w = now
+            text = now_w.strftime("%H:%M:%S" if fmt == "HH:MM:SS" else "%H:%M")
         elif kind in ("text", "ticker"):
             text = str(params.get("text") or "")
         elif kind == "rss":
@@ -1490,8 +1557,14 @@ def _draw_server_ticker(
         )
 
 
-def _overlay_widgets_jpeg(jpeg: bytes, widgets: list[dict[str, Any]]) -> bytes:
-    """Applique la barre de widgets sur une frame JPEG (aperçu vidéo)."""
+def _overlay_widgets_jpeg(
+    jpeg: bytes, widgets: list[dict[str, Any]], dims: tuple[int, int] | None = None
+) -> bytes:
+    """Applique la barre de widgets sur une frame JPEG (aperçu vidéo).
+
+    `dims` = taille de l'écran : la frame est cadrée dans le canevas écran
+    avant composition (widgets à taille/position constantes).
+    """
     if not widgets:
         return jpeg
     import io as _io
@@ -1500,7 +1573,10 @@ def _overlay_widgets_jpeg(jpeg: bytes, widgets: list[dict[str, Any]]) -> bytes:
 
     try:
         img = Image.open(_io.BytesIO(jpeg)).convert("RGB")
+        if dims:
+            img = _fit_on_canvas(img, dims[0], dims[1])
         composed = _compose_widget_bar_server(img, widgets)
+        composed.thumbnail((1280, 1280))
         out = _io.BytesIO()
         composed.save(out, "JPEG", quality=70)
         return out.getvalue()

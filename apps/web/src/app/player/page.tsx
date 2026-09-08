@@ -332,11 +332,12 @@ function KioskScreen({
     const w = widgets.find((x) => x.position === "top-right");
     if (!w) return;
     const fmt = String((w.params as Record<string, unknown>)?.format ?? "HH:MM");
+    const utc = String((w.params as Record<string, unknown>)?.tz ?? "site") === "utc";
     const tick = () => {
       const d = new Date();
-      const hh = String(d.getHours()).padStart(2, "0");
-      const mm = String(d.getMinutes()).padStart(2, "0");
-      const ss = String(d.getSeconds()).padStart(2, "0");
+      const hh = String(utc ? d.getUTCHours() : d.getHours()).padStart(2, "0");
+      const mm = String(utc ? d.getUTCMinutes() : d.getMinutes()).padStart(2, "0");
+      const ss = String(utc ? d.getUTCSeconds() : d.getSeconds()).padStart(2, "0");
       setClock(fmt === "HH:MM:SS" ? `${hh}:${mm}:${ss}` : `${hh}:${mm}`);
     };
     tick();

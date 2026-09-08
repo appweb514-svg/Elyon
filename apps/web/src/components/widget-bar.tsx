@@ -264,13 +264,22 @@ export function WidgetBar({
             </div>
           )}
           {w.type === "clock" && (
-            <div className="space-y-1">
-              <Label className="text-xs">Format</Label>
-              <Select value={String(w.params.format ?? "HH:MM")} onChange={(e) => update(index, { params: { ...w.params, format: e.target.value } })}>
-                <option value="HH:MM">Heure:Minute</option>
-                <option value="HH:MM:SS">Heure:Minute:Seconde</option>
-              </Select>
-            </div>
+            <>
+              <div className="space-y-1">
+                <Label className="text-xs">Format</Label>
+                <Select value={String(w.params.format ?? "HH:MM")} onChange={(e) => update(index, { params: { ...w.params, format: e.target.value } })}>
+                  <option value="HH:MM">Heure:Minute</option>
+                  <option value="HH:MM:SS">Heure:Minute:Seconde</option>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Fuseau horaire</Label>
+                <Select value={String(w.params.tz ?? "site")} onChange={(e) => update(index, { params: { ...w.params, tz: e.target.value } })}>
+                  <option value="site">Heure du site</option>
+                  <option value="utc">UTC</option>
+                </Select>
+              </div>
+            </>
           )}
         </div>
         <div className="flex justify-end">

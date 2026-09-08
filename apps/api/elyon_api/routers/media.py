@@ -59,6 +59,10 @@ _EXT_KIND = {
     ".webp": MediaKind.IMAGE,
     ".bmp": MediaKind.IMAGE,
     ".svg": MediaKind.IMAGE,
+    ".tif": MediaKind.IMAGE,
+    ".tiff": MediaKind.IMAGE,
+    ".heic": MediaKind.IMAGE,
+    ".heif": MediaKind.IMAGE,
     ".pdf": MediaKind.PDF,
     ".pptx": MediaKind.OFFICE,
     ".ppt": MediaKind.OFFICE,
@@ -295,6 +299,9 @@ def stop_show_media(
     if device.current_media_id == media.id:
         device.player_state = "idle"
         device.current_media_id = None
+    from elyon_api.services.playback_state import mark_queue_stopped
+
+    mark_queue_stopped(device.id)
     db.commit()
     db.refresh(cmd)
     audit(

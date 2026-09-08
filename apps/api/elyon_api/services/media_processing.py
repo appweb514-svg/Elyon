@@ -9,6 +9,27 @@ from elyon_api.config import Settings
 from elyon_api.models import Media, MediaKind, MediaStatus
 from elyon_api.services.storage import LocalStorage, safe_storage_path
 
+try:  # iPhone (HEIC/HEIF) : opener optionnel
+    import pillow_heif
+
+    pillow_heif.register_heif_opener()
+except ImportError:
+    pillow_heif = None
+
+
+def _rasterize_vector(src: Path, out_path: Path) -> bool:
+    """SVG → PNG (cairosvg) : PIL ne sait pas ouvrir les SVG."""
+    import io as _io
+
+    try:
+        import cairosvg
+
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        cairosvg.svg2png(url=str(src), write_to=str(out_path), output_width=1920)
+        return out_path.exists()
+    except Exception:  # noqa: BLE001
+        return False
+
 
 def _thumbnail(image_path: Path, out_path: Path, width: int = 320) -> None:
     from PIL import Image, ImageOps
@@ -89,8 +110,16 @@ def process_media(media: Media, settings: Settings, storage: LocalStorage | None
 
     if media.kind == MediaKind.IMAGE:
         thumb_path = safe_storage_path(f"thumbs/{media.id}.jpg")
-        _thumbnail(src, storage._abs(thumb_path))  # noqa: SLF001
-        media.pages_json = json.dumps([media.storage_path, thumb_path])
+        raster = src
+        if src.suffix.lower() == ".svg":
+            raster_png = storage._abs(safe_storage_path(f"thumbs/{media.id}.png"))  # noqa: SLF001
+            if _rasterize_vector(src, raster_png):
+                raster = raster_png
+                media.pages_json = json.dumps([safe_storage_path(f"thumbs/{media.id}.png"), thumb_path])
+        # HEIC/HEIF : pillow-heif doit être enregistré (opener ci-dessus).
+        _thumbnail(raster, storage._abs(thumb_path))  # noqa: SLF001
+        if not media.pages_json:
+            media.pages_json = json.dumps([media.storage_path, thumb_path])
     elif media.kind == MediaKind.VIDEO:
         # Vignette de bibliothèque (frame ~3 s) — l'aperçu serveur du mur
         # reste calculé à la volée avec la position de lecture.
