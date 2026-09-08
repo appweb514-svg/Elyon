@@ -91,6 +91,12 @@ def process_media(media: Media, settings: Settings, storage: LocalStorage | None
         thumb_path = safe_storage_path(f"thumbs/{media.id}.jpg")
         _thumbnail(src, storage._abs(thumb_path))  # noqa: SLF001
         media.pages_json = json.dumps([media.storage_path, thumb_path])
+    elif media.kind == MediaKind.VIDEO:
+        # Vignette de bibliothèque (frame ~3 s) — l'aperçu serveur du mur
+        # reste calculé à la volée avec la position de lecture.
+        thumb_path = safe_storage_path(f"thumbs/{media.id}.jpg")
+        if _video_thumbnail(src, storage._abs(thumb_path)):  # noqa: SLF001
+            media.pages_json = json.dumps([media.storage_path, thumb_path])
     elif media.kind == MediaKind.PDF:
         out_dir = safe_storage_path(f"pdf/{media.id}")
         pages = _pdf_to_images(src, storage._abs(out_dir))  # noqa: SLF001
