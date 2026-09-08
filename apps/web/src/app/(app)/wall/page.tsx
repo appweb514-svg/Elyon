@@ -18,6 +18,8 @@ export type WallFrame = {
   current_media_kind: string | null;
   last_seen_at: string | null;
   screen_id: string | null;
+  ticker_text?: string | null;
+  ticker_speed?: string | null;
 };
 
 function statusVariant(status: string): "success" | "warning" | "destructive" | "secondary" {
@@ -61,7 +63,25 @@ function VncWindow({ frame, delay }: { frame: WallFrame; delay?: number }) {
       </header>
       <Link href={`/devices/${frame.device_id}`} className="block">
         <div className="relative aspect-video bg-black">
-          {online ? (
+          {online && frame.player_state !== "playing" && frame.player_state !== "blank" ? (
+            <div className="elyon-idle absolute inset-0 flex flex-col items-center justify-center gap-3 overflow-hidden">
+              <span className="elyon-idle-orb left-[8%] top-[15%] h-24 w-24 bg-sky-500" />
+              <span className="elyon-idle-orb right-[10%] top-[55%] h-32 w-32 bg-indigo-500" style={{ animationDelay: "3s" }} />
+              <span className="elyon-idle-orb bottom-[10%] left-[45%] h-20 w-20 bg-cyan-400" style={{ animationDelay: "6s" }} />
+              <span className="elyon-idle-text text-lg font-semibold tracking-wide text-slate-100">
+                Affichage en préparation
+              </span>
+              {frame.ticker_text ? (
+                <div className="absolute bottom-0 left-0 right-0 overflow-hidden bg-black/70 px-3 py-1.5 text-xs whitespace-nowrap text-slate-100">
+                  <span
+                    className={`elyon-ticker inline-block ${frame.ticker_speed && frame.ticker_speed !== "normal" ? `elyon-ticker-${frame.ticker_speed}` : ""}`}
+                  >
+                    {frame.ticker_text}
+                  </span>
+                </div>
+              ) : null}
+            </div>
+          ) : online ? (
             /* eslint-disable-next-line @next/next/no-img-element */
             <img
               src={`/api/admin/wall/${frame.device_id}/live`}

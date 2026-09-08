@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import datetime as dt
+import html as html_mod
 import json
 import time
 from collections.abc import Sequence
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import Response
+from fastapi.responses import HTMLResponse, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -462,7 +463,7 @@ def wall_device_live(device_id: str, request: Request):
             # la première frame.
             await asyncio.sleep(10.0 if mime == "image/gif" else 0.4)
 
-    from fastapi.responses import StreamingResponse
+    from fastapi.responses import HTMLResponse, StreamingResponse
 
     return StreamingResponse(
         generate(),
@@ -865,7 +866,7 @@ def _placeholder_png_bytes(text: str) -> bytes:
 def _serve_storage_file(storage, rel_path: str, mime_type: str):
     if not storage.exists(rel_path):
         raise HTTPException(status_code=404, detail="Fichier manquant")
-    from fastapi.responses import Response as _Response
+    from fastapi.responses import HTMLResponse, Response as _Response
 
     with storage.open_read(rel_path) as f:
         data = f.read()
@@ -901,9 +902,59 @@ def admin_wall(
                 "current_media_kind": media.kind.value if media else None,
                 "last_seen_at": device.last_seen_at.isoformat() if device.last_seen_at else None,
                 "screen_id": device.screen.id if device.screen else None,
+                **dict(
+                    zip(("ticker_text", "ticker_speed"), _screen_ticker(device))
+                ),
             }
         )
     return items
+
+
+
+def _screen_ticker(device: Device) -> tuple[str | None, str | None]:
+    """Texte du widget « texte déroulant » (ou texte libre) de l'écran du device.
+
+    Sert à l'écran d'attente : le ticker reste visible même sans diffusion.
+    """
+    screen = device.screen
+    if screen is None or not screen.widgets_json:
+        return None, None
+    try:
+        widgets = json.loads(screen.widgets_json)
+    except (ValueError, TypeError):
+        return None, None
+    if not isinstance(widgets, list):
+        return None, None
+    for widget in widgets:
+        if not isinstance(widget, dict) or not widget.get("visible", True):
+            continue
+        position = str(widget.get("position") or "")
+        kind = str(widget.get("type") or "")
+        if position == "bottom-ticker" and kind in ("ticker", "text", "rss"):
+            params = widget.get("params") or {}
+            text = str(params.get("text") or "").strip()
+            if kind == "ticker" and text:
+                return text, str(params.get("speed") or "normal")
+            if kind == "text" and text:
+                return text, None
+    return None, None
+
+
+@router.get("/idle-screen", response_class=HTMLResponse)
+def idle_screen(text: str | None = None, speed: str = "normal") -> HTMLResponse:
+    """Écran d'attente : animation sobre + « Affichage en préparation ».
+
+    Page autonome (CSS inline) destinée aux kiosques Chromium et au mur.
+    `text` : texte déroulant optionnel affiché en bas de l'écran.
+    """
+    duration = {"slow": "30s", "fast": "7s"}.get(speed, "14s")
+    ticker_html = ""
+    if text:
+        safe = html_mod.escape(text)
+        ticker_html = (
+            f'<div class="ticker"><span style="animation-duration:{duration}">{safe}</span></div>'
+        )
+    return HTMLResponse(IDLE_SCREEN_HTML.replace("__TICKER__", ticker_html))
 
 
 def _audit_names(db: Session, rows: Sequence[AuditLog]) -> dict[str, str]:

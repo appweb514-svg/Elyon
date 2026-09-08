@@ -6,11 +6,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
-import { Eye, EyeOff, Rss, Settings2, CloudSun, Type, Clock3, Code2, X } from "lucide-react";
+import { Eye, EyeOff, Rss, Settings2, CloudSun, Type, Clock3, Code2, MoveHorizontal, X } from "lucide-react";
 
 export type Widget = {
   id?: string;
-  type: string; // weather | rss | text | clock | html
+  type: string; // weather | rss | text | ticker | clock | html
   position: string; // top-left | top-right | bottom-left | bottom-center | bottom-right | bottom-ticker
   visible: boolean;
   locked?: boolean; // widget de barre (haut/bas) : position non modifiable
@@ -20,6 +20,7 @@ export type Widget = {
 const TYPE_META: Record<string, { label: string; icon: typeof CloudSun }> = {
   weather: { label: "Météo", icon: CloudSun },
   rss: { label: "Flux RSS", icon: Rss },
+  ticker: { label: "Texte déroulant", icon: MoveHorizontal },
   text: { label: "Texte libre", icon: Type },
   clock: { label: "Horloge", icon: Clock3 },
   html: { label: "HTML", icon: Code2 },
@@ -109,18 +110,21 @@ export function WidgetBar({
     if (!meta) return;
     const w: Widget = {
       type,
-      position: ["bottom-left", "bottom-center", "bottom-right"][widgets.length % 3],
+      position: type === "ticker" ? "bottom-ticker" : ["bottom-left", "bottom-center", "bottom-right"][widgets.length % 3],
+      locked: type === "ticker" ? true : undefined,
       visible: true,
       params:
         type === "weather"
           ? { city: "Paris" }
           : type === "rss"
             ? { url: "" }
-            : type === "text"
-              ? { text: "Votre message ici" }
-              : type === "clock"
-                ? { format: "HH:MM" }
-                : { html: "<b>Bonjour</b>" },
+            : type === "ticker"
+              ? { text: "Votre message défilant ici", speed: "normal" }
+              : type === "text"
+                ? { text: "Votre message ici" }
+                : type === "clock"
+                  ? { format: "HH:MM" }
+                  : { html: "<b>Bonjour</b>" },
     };
     onChange([...widgets, w]);
     onOpenChange(w.id ?? String(widgets.length));
@@ -138,7 +142,7 @@ export function WidgetBar({
   }
 
   const topBarEnabled = findBar("weather") !== undefined || findBar("clock") !== undefined;
-  const bottomBarEnabled = findBar("rss") !== undefined;
+  const bottomBarEnabled = findBar("rss") !== undefined || findBar("ticker") !== undefined;
 
   function toggleTopBar(enable: boolean) {
     const rest = widgets.filter((w) => !(isBarWidget(w) && (w.type === "weather" || w.type === "clock")));
@@ -154,7 +158,7 @@ export function WidgetBar({
   }
 
   function toggleBottomBar(enable: boolean) {
-    const rest = widgets.filter((w) => !(isBarWidget(w) && w.type === "rss"));
+    const rest = widgets.filter((w) => !(isBarWidget(w) && (w.type === "rss" || w.type === "ticker")));
     if (!enable) {
       onChange(rest);
       return;
@@ -264,6 +268,7 @@ export function WidgetBar({
               ? "RSS : dernières actualités…"
               : "RSS : configurez l'URL")}
         {widget.type === "text" && String(widget.params.text ?? "")}
+        {widget.type === "ticker" && String(widget.params.text ?? "")}
         {widget.type === "clock" && <Clock3 className="mr-1 inline h-3.5 w-3.5" />}
         {widget.type === "clock" && (widget.params.format ?? "HH:MM") === "HH:MM:SS" ? "14:32:08" : "14:32"}
         {widget.type === "html" && <span dangerouslySetInnerHTML={{ __html: String(widget.params.html ?? "") }} />}
@@ -342,7 +347,7 @@ export function WidgetBar({
                   onClick={() => onOpenChange(id)}
                   aria-label={`Widget ${TYPE_META[w.type]?.label ?? ""} — cliquez pour configurer`}
                 >
-                  <span className="elyon-ticker inline-block">{renderWidgetContent(w)}</span>
+                  <span className={`elyon-ticker inline-block ${w.type === "ticker" ? `elyon-ticker-${String(w.params.speed ?? "normal")}` : ""}`}>{renderWidgetContent(w)}</span>
                 </button>
               );
             }
@@ -432,6 +437,22 @@ export function WidgetBar({
                       <Label className="text-xs">URL du flux RSS</Label>
                       <Input value={String(selected.params.url ?? "")} onChange={(e) => update(selectedIndex, { params: { ...selected.params, url: e.target.value } })} placeholder="https://exemple.fr/rss.xml" />
                     </div>
+                  )}
+                  {selected.type === "ticker" && (
+                    <>
+                      <div className="space-y-1 sm:col-span-2">
+                        <Label className="text-xs">Texte défilant</Label>
+                        <Input value={String(selected.params.text ?? "")} onChange={(e) => update(selectedIndex, { params: { ...selected.params, text: e.target.value } })} />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">Vitesse de défilement</Label>
+                        <Select value={String(selected.params.speed ?? "normal")} onChange={(e) => update(selectedIndex, { params: { ...selected.params, speed: e.target.value } })}>
+                          <option value="slow">Lente</option>
+                          <option value="normal">Normale</option>
+                          <option value="fast">Rapide</option>
+                        </Select>
+                      </div>
+                    </>
                   )}
                   {selected.type === "text" && (
                     <div className="space-y-1 sm:col-span-2">

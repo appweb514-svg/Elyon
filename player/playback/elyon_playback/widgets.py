@@ -34,6 +34,8 @@ def widget_text(widget: dict[str, Any], feed: dict[str, Any] | None, now: dateti
     kind = str(widget.get("type") or "")
     if kind == "text":
         return str(params.get("text") or "")
+    if kind == "ticker":
+        return str(params.get("text") or "")
     if kind == "clock":
         fmt = str(params.get("format") or "HH:MM")
         return now.strftime("%H:%M:%S" if fmt == "HH:MM:SS" else "%H:%M")
@@ -82,7 +84,7 @@ def has_ticker(widgets: list[dict[str, Any]]) -> bool:
     return any(
         isinstance(widget, dict)
         and widget.get("visible", True)
-        and widget.get("type") == "rss"
+        and widget.get("type") in ("rss", "ticker")
         and str(widget.get("position") or "") == "bottom-ticker"
         for widget in widgets
     )
@@ -103,7 +105,7 @@ def has_live_widgets(widgets: list[dict[str, Any]]) -> bool:
         and (
             str(widget.get("type") or "") in LIVE_WIDGET_TYPES
             or (
-                widget.get("type") == "rss"
+                widget.get("type") in ("rss", "ticker")
                 and str(widget.get("position") or "") == "bottom-ticker"
             )
         )

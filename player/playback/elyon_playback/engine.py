@@ -129,6 +129,7 @@ class PlaybackEngine:
         show_loop_seconds: float = 10.0,
         status_file: Path | None = None,
         ticker_tick_seconds: float = 0.5,
+        play_idle_frames: bool = False,
     ) -> None:
         self.renderer = renderer
         self.layout_provider = layout_provider
@@ -145,6 +146,8 @@ class PlaybackEngine:
         self.show_clear = clear_show_request
         self.show_loop_seconds = show_loop_seconds
         self.ticker_tick_seconds = ticker_tick_seconds
+        self.play_idle_frames = play_idle_frames
+        self._idle_frame_tick = 0.0
 
     def _should_stop(self) -> bool:
         return self.stop_check()
@@ -334,6 +337,48 @@ class PlaybackEngine:
         else:
             self.renderer.play_image(display_path, self.show_loop_seconds)
 
+    def _play_idle_frame(self, layout: dict[str, Any] | None) -> None:
+        """Écran d'attente : fond animé « Affichage en préparation » + widgets.
+
+        Les widgets (texte déroulant notamment) restent visibles même sans
+        diffusion. Trame re-rendue toutes les ~2 s pour animer le défilement.
+        Seulement pour les rendus réels (mpv) : le rendu factice du lab reste
+        en état « idle » et le mur affiche l'animation web.
+        """
+        if not self.play_idle_frames:
+            return
+        try:
+            from PIL import Image
+        except ImportError:
+            return
+        data_dir = self._data_dir()
+        idle_dir = data_dir / "idle"
+        idle_dir.mkdir(parents=True, exist_ok=True)
+        background = idle_dir / "background.png"
+        frame = idle_dir / "frame.jpg"
+        if not background.exists():
+            try:
+                width, height = 1920, 1080
+                gradient = Image.new("RGB", (width, height))
+                top, bottom = (15, 23, 42), (30, 27, 75)
+                px = gradient.load()
+                for y in range(height):
+                    t = y / max(height - 1, 1)
+                    r = int(top[0] + (bottom[0] - top[0]) * t)
+                    g = int(top[1] + (bottom[1] - top[1]) * t)
+                    b = int(top[2] + (bottom[2] - top[2]) * t)
+                    for x in range(width):
+                        px[x, y] = (r, g, b)
+                gradient.save(background, "PNG")
+            except OSError:
+                return
+        widgets = (layout or {}).get("widgets") or []
+        composed = compose_widget_bar(background, widgets, None, frame)
+        try:
+            self.renderer.play_image(composed or background, 2.0)
+        except Exception:  # noqa: BLE001 — l'écran d'attente ne doit jamais tuer la boucle
+            pass
+
     def run_forever(self) -> None:
         was_blanked = False
         # File restante de la playliste en cours : conservée entre les tours
@@ -385,10 +430,13 @@ class PlaybackEngine:
                 if layout is None:
                     self.current_media_id = None
                     self._publish_status({"media_id": None, "state": "idle"})
+                    self._play_idle_frame(None)
                     self.sleep_fn(self.idle_wait_seconds)
                     continue
                 queue = build_queue(layout, self.blob_dir)
                 if not queue:
+                    self._publish_status({"media_id": None, "state": "idle"})
+                    self._play_idle_frame(layout)
                     self.sleep_fn(self.idle_wait_seconds)
                     continue
 
@@ -437,6 +485,10 @@ def main() -> None:
         blob_dir=data_dir / "blobs",
         blank_state=FileBlankState(data_dir / "blank"),
         status_file=data_dir / "now-playing.json",
+        play_idle_frames=(
+            os.environ.get("ELYON_PLAYBACK_RENDERER", "mpv").strip().lower()
+            not in {"dummy", "headless", "lab"}
+        ),
     )
     engine.run_forever()
 
