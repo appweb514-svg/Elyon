@@ -1208,6 +1208,8 @@ def _device_widgets(device: Device) -> list[dict[str, Any]]:
 
 def _load_display_font(size: int):
     """Police d'affichage : DejaVu (accents) si présente, sinon la police PIL."""
+    from PIL import ImageFont
+
     try:
         return ImageFont.truetype(
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", size=size
