@@ -209,6 +209,8 @@ class Device(Base):
     )
     player_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
     current_media_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # File de diffusion : JSON [{media_id, position}], position courante en tête.
+    queue_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_preview: Mapped[bool] = mapped_column(Boolean, default=False)
     # Télémétrie rapportée par le player (heartbeat).
     uptime_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)

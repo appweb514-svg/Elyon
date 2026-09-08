@@ -55,6 +55,13 @@ type Device = {
   created_at: string;
 };
 
+type QueueItem = {
+  media_id: string;
+  name: string;
+  kind: string;
+  playing: boolean;
+};
+
 type WallFrame = {
   device_id: string;
   name: string;
@@ -150,6 +157,8 @@ export default function DeviceDetailPage() {
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [queue, setQueue] = useState<QueueItem[]>([]);
+  const [queueMediaId, setQueueMediaId] = useState("");
   const [assignPlaylist, setAssignPlaylist] = useState<string>("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [expandedPlaylist, setExpandedPlaylist] = useState<PlaylistDetail | null>(null);
@@ -235,17 +244,76 @@ export default function DeviceDetailPage() {
     setLiveBust((b) => b + 1);
   }, [currentMediaKey]);
 
-  async function stopShow() {
+  async function loadQueue() {
     try {
-      if (wall?.current_media_id) {
-        await api.post(`/api/media/${wall.current_media_id}/stop-show`, {
-          device_id: deviceId,
-        });
-      } else {
-        await api.post(`/api/devices/${deviceId}/commands`, { type: "stop_show" });
-      }
-      setNotice("Arrêt de la diffusion envoyé : retour au contenu programmé.");
-      await reload();
+      const data = await api.get<{ items: QueueItem[] }>(`/api/devices/${deviceId}/queue`);
+      setQueue(data.items ?? []);
+    } catch {
+      /* l'appareil peut ne pas être visible : on ignore */
+    }
+  }
+
+  const refreshAll = useCallback(async () => {
+    await loadQueue();
+    await reload();
+  }, [reload, deviceId]);
+
+  useEffect(() => {
+    loadQueue();
+    const h = setInterval(loadQueue, 4000);
+    return () => clearInterval(h);
+  }, [deviceId]);
+
+  useEffect(() => {
+    api.get<Media[]>("/api/media").then(setMediaList).catch(() => undefined);
+  }, [deviceId]);
+
+  async function queueAdd() {
+    if (!queueMediaId) return;
+    try {
+      await api.post(`/api/devices/${deviceId}/queue`, { media_id: queueMediaId });
+      setQueueMediaId("");
+      setNotice("Média ajouté à la file.");
+      await refreshAll();
+    } catch (err) {
+      setError(String((err as Error).message ?? err));
+    }
+  }
+
+  async function queuePlay(mediaId?: string) {
+    try {
+      await api.post(`/api/devices/${deviceId}/queue/play`, mediaId ? { media_id: mediaId } : {});
+      setNotice("Lecture lancée.");
+      await refreshAll();
+    } catch (err) {
+      setError(String((err as Error).message ?? err));
+    }
+  }
+
+  async function queueNext() {
+    try {
+      await api.post(`/api/devices/${deviceId}/queue/next`, {});
+      setNotice("Média suivant lancé.");
+      await refreshAll();
+    } catch (err) {
+      setError(String((err as Error).message ?? err));
+    }
+  }
+
+  async function queueStop() {
+    try {
+      await api.post(`/api/devices/${deviceId}/queue/stop`, {});
+      setNotice("Diffusion arrêtée.");
+      await refreshAll();
+    } catch (err) {
+      setError(String((err as Error).message ?? err));
+    }
+  }
+
+  async function queueRemove(mediaId: string) {
+    try {
+      await api.del(`/api/devices/${deviceId}/queue/${mediaId}`);
+      await refreshAll();
     } catch (err) {
       setError(String((err as Error).message ?? err));
     }
@@ -641,16 +709,87 @@ export default function DeviceDetailPage() {
                   className="h-full w-full object-contain"
                 />
               </TvFrame>
-              {isShowingDirect && wall?.current_media_name && (
-                <div className="mx-auto mt-4 flex max-w-2xl flex-wrap items-center justify-between gap-2 rounded-lg bg-muted/60 px-3 py-2">
-                  <div className="text-sm">
-                    Diffusion directe en cours : <strong>{wall.current_media_name}</strong>
+              <div className="mx-auto mt-4 w-full max-w-3xl space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-sm font-semibold">File de diffusion</p>
+                  <div className="flex flex-wrap gap-2">
+                    <Button size="sm" variant="outline" onClick={() => queuePlay()} disabled={queue.length === 0}>
+                      ▶ Reprendre
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={queueNext} disabled={queue.length < 2}>
+                      ⏭ Suivant
+                    </Button>
+                    <Button size="sm" variant="destructive" onClick={queueStop} disabled={!isShowingDirect}>
+                      ⏹ Arrêter la diffusion
+                    </Button>
                   </div>
-                  <Button size="sm" variant="destructive" onClick={stopShow}>
-                    Arrêter la diffusion
+                </div>
+                {queue.length === 0 ? (
+                  <p className="rounded-lg bg-muted/60 px-3 py-2 text-xs text-muted-foreground">
+                    Aucun média dans la file. Ajoutez des médias ci-dessous : le premier lu
+                    restera à l&apos;écran jusqu&apos;au suivant ou à l&apos;arrêt.
+                  </p>
+                ) : (
+                  <div className="overflow-hidden rounded-lg border">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b bg-muted/60 text-left text-xs uppercase tracking-wide text-muted-foreground">
+                          <th className="px-3 py-2">#</th>
+                          <th className="px-3 py-2">Média</th>
+                          <th className="px-3 py-2">Type</th>
+                          <th className="px-3 py-2">État</th>
+                          <th className="px-3 py-2 text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {queue.map((item, i) => (
+                          <tr key={item.media_id} className="border-b last:border-0">
+                            <td className="px-3 py-2 text-xs text-muted-foreground">{i + 1}</td>
+                            <td className="max-w-[220px] truncate px-3 py-2 font-medium">{item.name}</td>
+                            <td className="px-3 py-2 text-xs text-muted-foreground">{item.kind}</td>
+                            <td className="px-3 py-2">
+                              {item.playing ? (
+                                <Badge variant="success">En lecture</Badge>
+                              ) : (
+                                <Badge variant="secondary">En attente</Badge>
+                              )}
+                            </td>
+                            <td className="px-3 py-2">
+                              <div className="flex justify-end gap-1">
+                                {!item.playing && (
+                                  <Button size="sm" variant="ghost" onClick={() => queuePlay(item.media_id)} title="Lire ce média">
+                                    ▶
+                                  </Button>
+                                )}
+                                <Button size="sm" variant="ghost" onClick={() => queueRemove(item.media_id)} title="Retirer de la file">
+                                  ✕
+                                </Button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                <div className="flex flex-wrap items-center gap-2">
+                  <Select
+                    className="max-w-xs"
+                    value={queueMediaId}
+                    onChange={(e) => setQueueMediaId(e.target.value)}
+                  >
+                    <option value="">Ajouter un média à la file…</option>
+                    {mediaList.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name}
+                      </option>
+                    ))}
+                  </Select>
+                  <Button size="sm" onClick={queueAdd} disabled={!queueMediaId}>
+                    Ajouter
                   </Button>
                 </div>
-              )}
+              </div>
             </CardContent>
           </Card>
 

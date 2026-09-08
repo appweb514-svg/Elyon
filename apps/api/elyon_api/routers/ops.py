@@ -191,6 +191,203 @@ def fetch_commands(
     return [CommandOut.model_validate(c) for c in commands]
 
 
+def _device_queue_items(device: Device) -> list[dict[str, str]]:
+    if not device.queue_json:
+        return []
+    try:
+        items = json.loads(device.queue_json)
+    except (ValueError, TypeError):
+        return []
+    return [i for i in items if isinstance(i, dict) and i.get("media_id")]
+
+
+def _issue_show(db: Session, device: Device, media: Media, user: User) -> Command:
+    for stale in db.scalars(
+        select(Command).where(
+            Command.device_id == device.id,
+            Command.type == CommandType.SHOW,
+            Command.status == CommandStatus.PENDING,
+        )
+    ):
+        stale.status = CommandStatus.FAILED
+        stale.error = "Remplacé par une diffusion plus récente"
+    cmd = Command(
+        device_id=device.id,
+        type=CommandType.SHOW,
+        payload=json.dumps(
+            {"media_id": media.id, "name": media.name, "kind": media.kind.value}
+        ),
+    )
+    db.add(cmd)
+    device.current_media_id = media.id
+    device.player_state = "playing"
+    audit(db, "media.show", "media", media.id, detail=f"device={device.id} {media.name}", user=user)
+    db.commit()
+    db.refresh(cmd)
+    return cmd
+
+
+@router.get("/devices/{device_id}/queue")
+def get_device_queue(
+    device_id: str,
+    user: User = Depends(require_permission(Permission.DEVICE_VIEW)),
+    db: Session = Depends(get_db),
+) -> dict:
+    device = db.get(Device, device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail="Appareil introuvable")
+    require_site_access(db, user, device.org_id)
+    items = []
+    for item in _device_queue_items(device):
+        media = db.get(Media, item["media_id"])
+        if media is None:
+            continue
+        items.append(
+            {
+                "media_id": media.id,
+                "name": media.name,
+                "kind": media.kind.value,
+                "playing": device.current_media_id == media.id
+                and device.player_state == "playing",
+            }
+        )
+    return {
+        "items": items,
+        "state": device.player_state,
+        "current_media_id": device.current_media_id,
+    }
+
+
+@router.post("/devices/{device_id}/queue", status_code=201)
+def queue_add(
+    device_id: str,
+    body: dict,
+    user: User = Depends(require_permission(Permission.DEVICE_COMMAND)),
+    db: Session = Depends(get_db),
+) -> dict:
+    device = db.get(Device, device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail="Appareil introuvable")
+    require_site_access(db, user, device.org_id)
+    media = db.get(Media, str(body.get("media_id") or ""))
+    if media is None:
+        raise HTTPException(status_code=404, detail="Média introuvable")
+    if media.org_id != device.org_id:
+        raise HTTPException(status_code=400, detail="Média hors organisation de l'appareil")
+    items = _device_queue_items(device)
+    if any(i["media_id"] == media.id for i in items):
+        raise HTTPException(status_code=409, detail="Déjà dans la file")
+    items.append({"media_id": media.id})
+    device.queue_json = json.dumps(items)
+    audit(db, "device.queue_add", "device", device.id, detail=media.name, user=user)
+    db.commit()
+    return {"items": items}
+
+
+@router.delete("/devices/{device_id}/queue/{media_id}", status_code=204)
+def queue_remove(
+    device_id: str,
+    media_id: str,
+    user: User = Depends(require_permission(Permission.DEVICE_COMMAND)),
+    db: Session = Depends(get_db),
+) -> None:
+    device = db.get(Device, device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail="Appareil introuvable")
+    require_site_access(db, user, device.org_id)
+    items = [i for i in _device_queue_items(device) if i["media_id"] != media_id]
+    device.queue_json = json.dumps(items)
+    if device.current_media_id == media_id:
+        # Le média retiré était en lecture : STOP_SHOW pour ne pas le relancer.
+        cmd = Command(
+            device_id=device.id,
+            type=CommandType.STOP_SHOW,
+            payload=json.dumps({"media_id": media_id}),
+        )
+        db.add(cmd)
+        device.current_media_id = None
+        device.player_state = "idle"
+        audit(db, "device.queue_remove_playing", "device", device.id, detail=media_id, user=user)
+    else:
+        audit(db, "device.queue_remove", "device", device.id, detail=media_id, user=user)
+    db.commit()
+
+
+@router.post("/devices/{device_id}/queue/play", status_code=201)
+def queue_play(
+    device_id: str,
+    body: dict,
+    user: User = Depends(require_permission(Permission.DEVICE_COMMAND)),
+    db: Session = Depends(get_db),
+) -> dict:
+    device = db.get(Device, device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail="Appareil introuvable")
+    require_site_access(db, user, device.org_id)
+    if device.status != DeviceStatus.APPROVED:
+        raise HTTPException(status_code=409, detail="Appareil indisponible")
+    items = _device_queue_items(device)
+    if not items:
+        raise HTTPException(status_code=400, detail="File vide")
+    media_id = str(body.get("media_id") or "") or items[0]["media_id"]
+    if not any(i["media_id"] == media_id for i in items):
+        raise HTTPException(status_code=404, detail="Média hors file")
+    media = db.get(Media, media_id)
+    if media is None:
+        raise HTTPException(status_code=404, detail="Média introuvable")
+    # Le média lu passe en tête de file.
+    items = [i for i in items if i["media_id"] != media_id]
+    items.insert(0, {"media_id": media_id})
+    device.queue_json = json.dumps(items)
+    cmd = _issue_show(db, device, media, user)
+    return {"command_id": cmd.id, "media_id": media.id}
+
+
+@router.post("/devices/{device_id}/queue/next", status_code=201)
+def queue_next(
+    device_id: str,
+    user: User = Depends(require_permission(Permission.DEVICE_COMMAND)),
+    db: Session = Depends(get_db),
+) -> dict:
+    device = db.get(Device, device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail="Appareil introuvable")
+    require_site_access(db, user, device.org_id)
+    if device.status != DeviceStatus.APPROVED:
+        raise HTTPException(status_code=409, detail="Appareil indisponible")
+    items = _device_queue_items(device)
+    if len(items) < 2:
+        raise HTTPException(status_code=400, detail="Aucun média suivant")
+    next_id = items[1]["media_id"]
+    media = db.get(Media, next_id)
+    if media is None:
+        raise HTTPException(status_code=404, detail="Média introuvable")
+    items = items[1:] + [items[0]]  # rotation : le média lu passe en fin de file
+    device.queue_json = json.dumps(items)
+    cmd = _issue_show(db, device, media, user)
+    return {"command_id": cmd.id, "media_id": next_id}
+
+
+@router.post("/devices/{device_id}/queue/stop", status_code=201)
+def queue_stop(
+    device_id: str,
+    user: User = Depends(require_permission(Permission.DEVICE_COMMAND)),
+    db: Session = Depends(get_db),
+) -> dict:
+    device = db.get(Device, device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail="Appareil introuvable")
+    require_site_access(db, user, device.org_id)
+    cmd = Command(device_id=device.id, type=CommandType.STOP_SHOW, payload=json.dumps({}))
+    db.add(cmd)
+    device.current_media_id = None
+    device.player_state = "idle"
+    audit(db, "device.queue_stop", "device", device.id, user=user)
+    db.commit()
+    db.refresh(cmd)
+    return {"command_id": cmd.id}
+
+
 @router.post("/devices/{device_id}/commands", status_code=201)
 def issue_command(
     device_id: str,
