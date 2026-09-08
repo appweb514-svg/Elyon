@@ -452,7 +452,7 @@ export default function MediaPage() {
             <CardDescription>
               {view === "trash"
                 ? "Médias corbeillés — restaurables ; purge automatique après 30 jours."
-                : "Vidéos (H.264/AAC, WebM…), images (PNG, JPG, GIF animé…), PDF et Office (PowerPoint → diaporama)."}
+                : "Formats supportés — Vidéos : MP4, WebM, MKV, MOV, AVI (H.264/AAC) · Images : JPG, PNG, GIF (animé), WebP, BMP, SVG · Documents : PDF, PowerPoint (PPT/PPTX/ODP), Word (DOC/DOCX/ODT), Excel (XLS/XLSX/ODS) — PowerPoint et Office convertis en diaporama."}
             </CardDescription>
           </div>
           <div className="flex items-center gap-2">

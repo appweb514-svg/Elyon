@@ -1219,21 +1219,16 @@ def _compose_widget_bar_server(img: "Image.Image", widgets: list[dict[str, Any]]
     width, height = img.size
     overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
-    font_size = max(12, height // 30)
-    try:
-        font = ImageFont.load_default(size=font_size)
-    except TypeError:
-        font = ImageFont.load_default()
+    base_size = max(12, height // 30)
     small_size = max(11, height // 40)
-    try:
-        small = ImageFont.load_default(size=small_size)
-    except TypeError:
-        small = font
     pad_x, pad_y, margin = max(6, width // 150), max(4, height // 90), max(8, width // 100)
     now = dt.datetime.now()
     for widget in widgets:
         kind = str(widget.get("type") or "")
         position = str(widget.get("position") or "bottom-left")
+        scale = {"small": 1.0, "medium": 1.5, "large": 2.2}.get(
+            str((widget.get("params") or {}).get("size") or "medium"), 1.5
+        )
         params = widget.get("params") or {}
         if kind == "weather":
             city = str(params.get("city") or "").strip() or "Météo"
@@ -1250,9 +1245,8 @@ def _compose_widget_bar_server(img: "Image.Image", widgets: list[dict[str, Any]]
         elif kind == "clock":
             fmt = str(params.get("format") or "HH:MM")
             text = now.strftime("%H:%M:%S" if fmt == "HH:MM:SS" else "%H:%M")
-        elif kind in ("text", "ticker", "html"):
-            raw = str(params.get("text") or params.get("html") or "")
-            text = re_sub_html(raw) if kind == "html" else raw
+        elif kind in ("text", "ticker"):
+            text = str(params.get("text") or "")
         elif kind == "rss":
             entry = _widget_feed_entry("rss", params) or {}
             items = [str(i) for i in (entry.get("items") or []) if str(i).strip()]
@@ -1261,11 +1255,19 @@ def _compose_widget_bar_server(img: "Image.Image", widgets: list[dict[str, Any]]
             continue
         if not text:
             continue
-        top = position.startswith("top-")
+        font_size = int(base_size * scale)
+        try:
+            font = ImageFont.load_default(size=font_size)
+        except TypeError:
+            font = ImageFont.load_default()
+        try:
+            small = ImageFont.load_default(size=max(11, int(small_size * scale)))
+        except TypeError:
+            small = font
         if position == "bottom-ticker":
-            _draw_server_ticker(draw, img, text, font, small_size, now, height)
+            _draw_server_ticker(draw, img, text, font, max(11, int(small_size * scale)), now, height)
             continue
-        f = font if kind in ("weather", "clock") else small
+        f = font
         try:
             bbox = draw.multiline_textbbox((0, 0), text, font=f)
         except Exception:  # noqa: BLE001
@@ -1274,6 +1276,26 @@ def _compose_widget_bar_server(img: "Image.Image", widgets: list[dict[str, Any]]
         if text_w <= 0:
             continue
         bar_w, bar_h = text_w + 2 * pad_x, text_h + 2 * pad_y
+        if position == "top-band":
+            draw.rounded_rectangle(
+                (0, margin, width, margin + bar_h), radius=max(4, bar_h // 3), fill=(0, 0, 0, 178)
+            )
+            draw.multiline_text(
+                ((width - text_w) // 2, margin + pad_y - bbox[1]), text, font=f, fill=(255, 255, 255, 255)
+            )
+            continue
+        if position == "center":
+            draw.rounded_rectangle(
+                ((width - bar_w) // 2, (height - bar_h) // 2, (width + bar_w) // 2, (height + bar_h) // 2),
+                radius=max(4, bar_h // 3),
+                fill=(0, 0, 0, 178),
+            )
+            draw.multiline_text(
+                ((width - text_w) // 2, (height - text_h) // 2 - bbox[1]),
+                text, font=f, fill=(255, 255, 255, 255),
+            )
+            continue
+        top = position.startswith("top-")
         if position.endswith("-center"):
             bar_x = (width - bar_w) // 2
         elif position.endswith("-right"):

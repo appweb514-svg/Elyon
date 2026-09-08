@@ -59,11 +59,22 @@ def widget_text(widget: dict[str, Any], feed: dict[str, Any] | None, now: dateti
 BAR_POSITIONS = {
     "top-left",
     "top-right",
+    "top-band",
+    "center",
     "bottom-left",
     "bottom-center",
     "bottom-right",
     "bottom-ticker",
 }
+
+
+SIZE_SCALES = {"small": 1.0, "medium": 1.5, "large": 2.2}
+
+
+def widget_scale(widget: dict[str, Any]) -> float:
+    """Facteur de taille du widget (petit/moyen/grand) → échelle du texte."""
+    raw = str((widget.get("params") or {}).get("size") or "medium")
+    return SIZE_SCALES.get(raw, SIZE_SCALES["medium"])
 
 
 def _slots(widgets: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -240,17 +251,19 @@ def compose_widget_bar(
     width, height = base.size
     overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
-    font_size = max(12, height // 30)
-    try:
-        font = ImageFont.load_default(size=font_size)
-    except TypeError:
-        font = ImageFont.load_default()
+    base_size = max(12, height // 30)
     pad_x = max(6, width // 150)
     pad_y = max(4, height // 90)
     margin = max(8, width // 100)
     now = datetime.now()
     drawn_any = False
     for position, widget in slots.items():
+        scale = widget_scale(widget)
+        font_size = int(base_size * scale)
+        try:
+            font = ImageFont.load_default(size=font_size)
+        except TypeError:
+            font = ImageFont.load_default()
         if widget.get("type") == "weather" and _draw_weather_block(
             draw, widget, feed, now, font, font_size, width, height, position, margin, pad_x, pad_y
         ):
@@ -258,6 +271,36 @@ def compose_widget_bar(
             continue
         text = widget_text(widget, feed, now)
         if not text:
+            continue
+        if position in ("top-band", "center"):
+            try:
+                bbox = draw.textbbox((0, 0), text, font=font)
+            except ValueError:
+                continue
+            text_w = max(bbox[2] - bbox[0], 1)
+            text_h = max(bbox[3] - bbox[1], 1)
+            pad = max(10, font_size // 2)
+            if position == "top-band":
+                bar_h = text_h + 2 * pad_y
+                draw.rounded_rectangle(
+                    (0, margin, width, margin + bar_h), radius=max(4, bar_h // 3), fill=(0, 0, 0, 178)
+                )
+                draw.text(
+                    ((width - text_w) // 2, margin + pad_y - bbox[1]), text, font=font, fill=(255, 255, 255, 255)
+                )
+            else:  # center
+                bar_w = min(text_w + 2 * pad, int(width * 0.8))
+                bar_h = text_h + 2 * pad_y
+                draw.rounded_rectangle(
+                    ((width - bar_w) // 2, (height - bar_h) // 2, (width + bar_w) // 2, (height + bar_h) // 2),
+                    radius=max(4, bar_h // 3),
+                    fill=(0, 0, 0, 178),
+                )
+                draw.text(
+                    ((width - text_w) // 2, (height - text_h) // 2 - bbox[1]),
+                    text, font=font, fill=(255, 255, 255, 255),
+                )
+            drawn_any = True
             continue
         if position == "bottom-ticker":
             if _draw_ticker(draw, width, height, text, font, now):

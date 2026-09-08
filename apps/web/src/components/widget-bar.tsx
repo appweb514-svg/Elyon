@@ -1,40 +1,61 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
-import { Eye, EyeOff, Rss, Settings2, CloudSun, Type, Clock3, Code2, MoveHorizontal, X } from "lucide-react";
+import { Eye, EyeOff, Rss, Settings2, CloudSun, Type, Clock3, MoveHorizontal, X } from "lucide-react";
 
 export type Widget = {
   id?: string;
-  type: string; // weather | rss | ticker | text | clock | html
-  position: string; // top-left | top-right | bottom-left | bottom-center | bottom-right | bottom-ticker
+  type: string; // weather | rss | ticker | text | clock
+  position: string; // fixe par type : top-band | top-right | center | bottom-ticker
   visible: boolean;
-  locked?: boolean; // widget de barre (haut/bas) : position non modifiable
+  locked?: boolean;
   params: Record<string, string | number | null>;
 };
 
-const TYPE_META: Record<string, { label: string; icon: typeof CloudSun }> = {
-  weather: { label: "Météo", icon: CloudSun },
-  rss: { label: "Flux RSS", icon: Rss },
-  ticker: { label: "Texte déroulant", icon: MoveHorizontal },
-  text: { label: "Texte libre", icon: Type },
-  clock: { label: "Horloge", icon: Clock3 },
-  html: { label: "HTML", icon: Code2 },
+/** Emplacement fixe par type de widget. */
+const FIXED_POSITION: Record<string, string> = {
+  weather: "top-band",
+  clock: "top-right",
+  rss: "bottom-ticker",
+  ticker: "bottom-ticker",
+  text: "center",
 };
 
-const POSITIONS = [
-  { value: "bottom-left", label: "Bas gauche" },
-  { value: "bottom-center", label: "Bas centre" },
-  { value: "bottom-right", label: "Bas droite" },
+const TYPE_META: Record<string, { label: string; icon: typeof CloudSun; hint: string }> = {
+  weather: { label: "Météo", icon: CloudSun, hint: "bandeau en haut" },
+  rss: { label: "Flux RSS", icon: Rss, hint: "bandeau défilant en bas" },
+  ticker: { label: "Texte déroulant", icon: MoveHorizontal, hint: "bandeau défilant en bas" },
+  text: { label: "Texte libre", icon: Type, hint: "au milieu de l'écran" },
+  clock: { label: "Horloge", icon: Clock3, hint: "en haut à droite" },
+};
+
+/** Taille du widget : grandit le texte (rendu player + aperçu serveur). */
+const SIZES = [
+  { value: "small", label: "Petit" },
+  { value: "medium", label: "Moyen" },
+  { value: "large", label: "Grand" },
 ];
 
-/** Widget verrouillé = élément d'une barre (météo/horloge en haut, ticker RSS/texte en bas). */
-function isBarWidget(w: Widget): boolean {
-  return w.locked === true || ["top-left", "top-right", "bottom-ticker"].includes(w.position);
+function defaultParams(type: string): Record<string, string | number | null> {
+  switch (type) {
+    case "weather":
+      return { city: "Paris", size: "medium" };
+    case "rss":
+      return { url: "", size: "medium" };
+    case "ticker":
+      return { text: "Votre message défilant ici", speed: "normal", size: "medium" };
+    case "text":
+      return { text: "Votre message ici", size: "medium" };
+    case "clock":
+      return { format: "HH:MM", size: "medium" };
+    default:
+      return { size: "medium" };
+  }
 }
 
 /** Code WMO (Open-Meteo) → icône météo. */
@@ -75,17 +96,11 @@ function ForecastRow({ forecast }: { forecast: ForecastDay[] }) {
   );
 }
 
-const SAMPLE_FORECAST: ForecastDay[] = [
-  { date: "", max: 24, min: 15, code: 1 },
-  { date: "", max: 22, min: 14, code: 61 },
-  { date: "", max: 19, min: 13, code: 3 },
-  { date: "", max: 21, min: 12, code: 0 },
-];
-
 /** Barre de widgets : liste + configuration dépliable sous chaque widget.
  *
- * `openId` est contrôlé par le parent (persistant à travers les re-renders) :
- * le rechargement périodique de la page ne referme plus le menu de réglages.
+ * Emplacements fixes par type (météo en bandeau haut, horloge en haut à
+ * droite, texte au centre, RSS/texte déroulant en bas) — pas d'aperçu, pas
+ * de déplacement. Taille petit/moyen/grand.
  */
 export function WidgetBar({
   widgets,
@@ -100,9 +115,6 @@ export function WidgetBar({
 }) {
   const [preview, setPreview] = useState<Record<string, unknown>>({});
   const [loading, setLoading] = useState<string | null>(null);
-  const [draggingId, setDraggingId] = useState<string | null>(null);
-  const previewRef = useRef<HTMLDivElement | null>(null);
-  const dragRef = useRef<{ id: string; index: number } | null>(null);
 
   function add(type: string) {
     if (widgets.length >= 3) return;
@@ -110,24 +122,10 @@ export function WidgetBar({
     if (!meta) return;
     const w: Widget = {
       type,
-      position:
-        type === "ticker"
-          ? "bottom-ticker"
-          : ["bottom-left", "bottom-center", "bottom-right"][widgets.length % 3],
-      locked: type === "ticker" ? true : undefined,
+      position: FIXED_POSITION[type] ?? "bottom-left",
+      locked: true,
       visible: true,
-      params:
-        type === "weather"
-          ? { city: "Paris" }
-          : type === "rss"
-            ? { url: "" }
-            : type === "ticker"
-              ? { text: "Votre message défilant ici", speed: "normal" }
-              : type === "text"
-                ? { text: "Votre message ici" }
-                : type === "clock"
-                  ? { format: "HH:MM" }
-                  : { html: "<b>Bonjour</b>" },
+      params: defaultParams(type),
     };
     onChange([...widgets, w]);
     onOpenChange(w.id ?? String(widgets.length));
@@ -138,37 +136,37 @@ export function WidgetBar({
     onChange(next);
   }
 
-  // --- Barres d'information (haut : météo + heure, bas : ticker RSS/texte) ---
+  // --- Barres d'information (haut : météo + heure, bas : RSS/texte déroulant) ---
 
   function findBar(type: string): Widget | undefined {
-    return widgets.find((w) => w.type === type && isBarWidget(w));
+    return widgets.find((w) => w.type === type && w.visible);
   }
 
   const topBarEnabled = findBar("weather") !== undefined || findBar("clock") !== undefined;
   const bottomBarEnabled = findBar("rss") !== undefined || findBar("ticker") !== undefined;
 
   function toggleTopBar(enable: boolean) {
-    const rest = widgets.filter((w) => !(isBarWidget(w) && (w.type === "weather" || w.type === "clock")));
+    const rest = widgets.filter((w) => !(w.type === "weather" || w.type === "clock"));
     if (!enable) {
       onChange(rest);
       return;
     }
     onChange([
       ...rest,
-      { type: "weather", position: "top-left", visible: true, locked: true, params: { city: "Paris" } },
-      { type: "clock", position: "top-right", visible: true, locked: true, params: { format: "HH:MM" } },
+      { type: "weather", position: "top-band", locked: true, visible: true, params: defaultParams("weather") },
+      { type: "clock", position: "top-right", locked: true, visible: true, params: defaultParams("clock") },
     ]);
   }
 
   function toggleBottomBar(enable: boolean) {
-    const rest = widgets.filter((w) => !(isBarWidget(w) && (w.type === "rss" || w.type === "ticker")));
+    const rest = widgets.filter((w) => !(w.type === "rss" || w.type === "ticker"));
     if (!enable) {
       onChange(rest);
       return;
     }
     onChange([
       ...rest,
-      { type: "rss", position: "bottom-ticker", visible: true, locked: true, params: { url: "" } },
+      { type: "rss", position: "bottom-ticker", locked: true, visible: true, params: defaultParams("rss") },
     ]);
   }
 
@@ -187,130 +185,28 @@ export function WidgetBar({
     }
   }
 
-  function widgetPosition(position: string): string {
-    switch (position) {
-      case "top-left":
-        return "top-2 left-2";
-      case "top-right":
-        return "top-2 right-2";
-      case "bottom-right":
-        return "right-2";
-      case "bottom-ticker":
-        return "bottom-0 left-0 right-0";
-      case "bottom-center":
-        return "left-1/2 -translate-x-1/2";
-      default:
-        return "left-2";
-    }
-  }
-
-  function slotFromClientX(
-    clientX: number,
-    clientY: number,
-  ): "bottom-left" | "bottom-center" | "bottom-right" | "top-left" | "top-right" {
-    const rect = previewRef.current?.getBoundingClientRect();
-    if (!rect || rect.width === 0) return "bottom-left";
-    const top = (clientY - rect.top) / rect.height < 0.25;
-    const ratio = (clientX - rect.left) / rect.width;
-    if (top) return ratio < 0.5 ? "top-left" : "top-right";
-    if (ratio < 1 / 3) return "bottom-left";
-    if (ratio < 2 / 3) return "bottom-center";
-    return "bottom-right";
-  }
-
-  function onWidgetDragStart(event: React.DragEvent, w: Widget, index: number) {
-    const id = w.id ?? String(index);
-    dragRef.current = { id, index };
-    setDraggingId(id);
-    onOpenChange(null);
-    event.dataTransfer.effectAllowed = "move";
-    try {
-      event.dataTransfer.setData("text/plain", id);
-    } catch {
-      /* anciens navigateurs */
-    }
-  }
-
-  function onPreviewDragOver(event: React.DragEvent) {
-    event.preventDefault();
-    event.dataTransfer.dropEffect = "move";
-  }
-
-  function onPreviewDrop(event: React.DragEvent) {
-    event.preventDefault();
-    const drag = dragRef.current;
-    dragRef.current = null;
-    setDraggingId(null);
-    if (!drag) return;
-    update(drag.index, { position: slotFromClientX(event.clientX, event.clientY) });
-  }
-
-  function onWidgetDragEnd() {
-    dragRef.current = null;
-    setDraggingId(null);
-  }
-
-  function renderWidgetContent(widget: Widget) {
-    return (
-      <>
-        {widget.type === "weather" && (
-          <span className="flex flex-col gap-0.5">
-            <span>{widget.params.city ?? "Ville"} · 12°C {weatherEmoji(1)}</span>
-            <ForecastRow forecast={SAMPLE_FORECAST} />
-          </span>
-        )}
-        {widget.type === "rss" &&
-          (widget.position === "bottom-ticker"
-            ? widget.params.url
-              ? "Actualité 1  •  Actualité 2  •  Actualité 3 …"
-              : "Configurez l'URL du flux RSS"
-            : widget.params.url
-              ? "RSS : dernières actualités…"
-              : "RSS : configurez l'URL")}
-        {widget.type === "ticker" && String(widget.params.text ?? "")}
-        {widget.type === "text" && String(widget.params.text ?? "")}
-        {widget.type === "clock" && <Clock3 className="mr-1 inline h-3.5 w-3.5" />}
-        {widget.type === "clock" && (widget.params.format ?? "HH:MM") === "HH:MM:SS" ? "14:32:08" : "14:32"}
-        {widget.type === "html" && <span dangerouslySetInnerHTML={{ __html: String(widget.params.html ?? "") }} />}
-      </>
-    );
-  }
-
   /** Panneau de configuration déployé sous la ligne du widget. */
   function renderConfigPanel(w: Widget, index: number) {
     return (
       <div className="mt-3 space-y-3 rounded-lg border bg-muted/30 p-3">
         <div className="flex items-start gap-3">
           <div className="min-w-0 flex-1">
-            <p className="text-sm font-semibold">Configuration du widget</p>
+            <p className="text-sm font-semibold">Configuration</p>
             <p className="text-xs text-muted-foreground">
-              Les changements sont visibles immédiatement dans l&apos;aperçu.
+              Emplacement fixe : {TYPE_META[w.type]?.hint ?? w.position}.
             </p>
           </div>
           <Button type="button" size="icon" variant="ghost" onClick={() => onOpenChange(null)} aria-label="Fermer">
             <X />
           </Button>
         </div>
-        <div className="rounded-lg border bg-muted/40 p-3">
-          <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Prévisualisation en temps réel</p>
-          <div className="relative aspect-video overflow-hidden rounded-md bg-gradient-to-br from-slate-200 to-slate-300 dark:from-slate-800 dark:to-slate-950">
-            <div className="flex h-full items-center justify-center text-[10px] text-muted-foreground">Contenu principal</div>
-            <div className={`absolute bottom-2 ${widgetPosition(w.position)} max-w-[calc(100%-1rem)]`}>
-              <span className="max-w-full rounded-md bg-black/70 px-3 py-1.5 text-xs text-white shadow">
-                {renderWidgetContent(w)}
-              </span>
-            </div>
-          </div>
-        </div>
         <div className="grid gap-3 sm:grid-cols-2">
-          {!isBarWidget(w) && (
-            <div className="space-y-1">
-              <Label className="text-xs">Emplacement</Label>
-              <Select value={w.position} onChange={(e) => update(index, { position: e.target.value })}>
-                {POSITIONS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
-              </Select>
-            </div>
-          )}
+          <div className="space-y-1">
+            <Label className="text-xs">Taille</Label>
+            <Select value={String(w.params.size ?? "medium")} onChange={(e) => update(index, { params: { ...w.params, size: e.target.value } })}>
+              {SIZES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+            </Select>
+          </div>
           {w.type === "weather" && (
             <div className="space-y-1">
               <Label className="text-xs">Ville</Label>
@@ -376,12 +272,6 @@ export function WidgetBar({
               </Select>
             </div>
           )}
-          {w.type === "html" && (
-            <div className="space-y-1 sm:col-span-2">
-              <Label className="text-xs">HTML à afficher</Label>
-              <Input value={String(w.params.html ?? "")} onChange={(e) => update(index, { params: { ...w.params, html: e.target.value } })} />
-            </div>
-          )}
         </div>
         <div className="flex justify-end">
           <Button type="button" onClick={() => onOpenChange(null)}>Terminer</Button>
@@ -401,7 +291,7 @@ export function WidgetBar({
           onClick={() => toggleTopBar(!topBarEnabled)}
           className={`rounded-md border px-3 py-1.5 text-xs font-medium transition ${topBarEnabled ? "border-primary bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted/60"}`}
         >
-          Barre du haut : météo à gauche, heure à droite {topBarEnabled ? "✓" : ""}
+          Bandeau du haut : météo + horloge {topBarEnabled ? "✓" : ""}
         </button>
         <button
           type="button"
@@ -411,7 +301,7 @@ export function WidgetBar({
           onClick={() => toggleBottomBar(!bottomBarEnabled)}
           className={`rounded-md border px-3 py-1.5 text-xs font-medium transition ${bottomBarEnabled ? "border-primary bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted/60"}`}
         >
-          Barre du bas : flux RSS défilant {bottomBarEnabled ? "✓" : ""}
+          Bandeau du bas : flux RSS défilant {bottomBarEnabled ? "✓" : ""}
         </button>
       </div>
     );
@@ -423,66 +313,17 @@ export function WidgetBar({
         {Object.entries(TYPE_META).map(([type, meta]) => {
           const Icon = meta.icon;
           return (
-            <Button key={type} type="button" variant="outline" size="sm" onClick={() => add(type)}>
+            <Button key={type} type="button" variant="outline" size="sm" onClick={() => add(type)} title={meta.hint}>
               <Icon /> {meta.label}
             </Button>
           );
         })}
         <span className="text-xs text-muted-foreground">
-          Cliquez sur un widget dans l&apos;aperçu pour le configurer, glissez-le pour changer son emplacement (3 maximum).
+          Emplacements fixes. Cliquez sur ⚙ pour configurer (taille petit/moyen/grand, 3 widgets maximum).
         </span>
       </div>
 
       {renderBarToggles()}
-
-      {widgets.length > 0 && (
-        <div
-          ref={previewRef}
-          data-testid="widget-preview"
-          onDragOver={onPreviewDragOver}
-          onDrop={onPreviewDrop}
-          className="relative aspect-video w-full overflow-hidden rounded-lg border bg-gradient-to-br from-slate-100 to-slate-200 dark:from-slate-900 dark:to-slate-950"
-        >
-          <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-            Contenu principal (playlist)
-          </div>
-          {widgets.map((w, i) => {
-            if (!w.visible) return null;
-            const id = w.id ?? String(i);
-            const isDragging = draggingId === id;
-            const pos = widgetPosition(w.position);
-            const locked = isBarWidget(w);
-            if (w.position === "bottom-ticker") {
-              return (
-                <button
-                  key={id}
-                  type="button"
-                  className={`absolute bottom-0 left-0 right-0 cursor-pointer overflow-hidden rounded-b-md bg-black/80 px-3 py-1.5 text-left text-xs whitespace-nowrap text-white shadow focus:outline-none focus:ring-2 focus:ring-primary ${isDragging ? "z-20 opacity-70" : ""}`}
-                  onClick={() => onOpenChange(id)}
-                  aria-label={`Widget ${TYPE_META[w.type]?.label ?? ""} — cliquez pour configurer`}
-                >
-                  <span className={`elyon-ticker inline-block ${w.type === "ticker" ? `elyon-ticker-${String(w.params.speed ?? "normal")}` : ""}`}>{renderWidgetContent(w)}</span>
-                </button>
-              );
-            }
-            return (
-              <button
-                key={id}
-                type="button"
-                draggable={!locked}
-                onDragStart={locked ? undefined : (e) => onWidgetDragStart(e, w, i)}
-                onDragEnd={locked ? undefined : onWidgetDragEnd}
-                className={`absolute bottom-2 ${pos} select-none max-w-[60%] rounded-md bg-black/70 px-3 py-1.5 text-left text-xs text-white shadow transition hover:bg-black/85 focus:outline-none focus:ring-2 focus:ring-primary ${locked ? "cursor-default" : "cursor-grab active:cursor-grabbing"} ${isDragging ? "z-20 opacity-70" : ""}`}
-                style={w.position.startsWith("top-") ? { bottom: "auto" } : undefined}
-                onClick={() => onOpenChange(id)}
-                aria-label={`Widget ${TYPE_META[w.type]?.label ?? ""} — cliquez pour configurer${locked ? "" : ", glissez pour déplacer"}`}
-              >
-                {renderWidgetContent(w)}
-              </button>
-            );
-          })}
-        </div>
-      )}
 
       <ul className="space-y-2">
         {widgets.map((w, i) => {
@@ -495,11 +336,12 @@ export function WidgetBar({
                 <Icon className="h-4 w-4 text-primary" />
                 <button type="button" className="min-w-0 flex-1 truncate text-left text-sm font-medium hover:text-primary" onClick={() => onOpenChange(id)}>
                   {meta.label}
+                  <span className="ml-2 text-xs font-normal text-muted-foreground">{meta.hint}</span>
                 </button>
                 <Button type="button" size="icon" variant="ghost" aria-label={w.visible ? "Cacher le widget" : "Afficher le widget"} title={w.visible ? "Cacher" : "Afficher"} onClick={() => update(i, { visible: !w.visible })}>
                   {w.visible ? <Eye /> : <EyeOff />}
                 </Button>
-                <Button type="button" size="icon" variant="ghost" aria-label="Configurer le widget" title="Emplacement et paramètres" onClick={() => onOpenChange(id)}>
+                <Button type="button" size="icon" variant="ghost" aria-label="Configurer le widget" title="Paramètres" onClick={() => onOpenChange(id)}>
                   <Settings2 />
                 </Button>
                 <Button type="button" size="sm" variant="ghost" aria-label="Supprimer le widget" onClick={() => { if (openId === id) onOpenChange(null); onChange(widgets.filter((_, j) => j !== i)); }}>
