@@ -104,6 +104,9 @@ services:
       context: .
       dockerfile: player/Dockerfile
     hostname: rpi-emu-1
+    labels:
+      - pi-admin.device=true
+      - pi-admin.kind=raspberry-emule
     environment:
       ELYON_AGENT_SERVER_URL: http://api:8000
       ELYON_AGENT_SERIAL: emu-rpi-1
@@ -125,6 +128,9 @@ services:
       context: .
       dockerfile: player/Dockerfile
     hostname: rpi-emu-2
+    labels:
+      - pi-admin.device=true
+      - pi-admin.kind=raspberry-emule
     environment:
       ELYON_AGENT_SERVER_URL: http://api:8000
       ELYON_AGENT_SERIAL: emu-rpi-2
