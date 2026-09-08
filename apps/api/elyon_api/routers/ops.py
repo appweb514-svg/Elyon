@@ -1356,6 +1356,7 @@ def _compose_widget_bar_server(img: "Image.Image", widgets: list[dict[str, Any]]
     small_size = max(11, height // 40)
     pad_x, pad_y, margin = max(6, width // 150), max(4, height // 90), max(8, width // 100)
     now = dt.datetime.now()
+    band_bottom: int | None = None  # bas du bandeau haut (météo)
     for widget in widgets:
         kind = str(widget.get("type") or "")
         position = str(widget.get("position") or "bottom-left")
@@ -1410,16 +1411,31 @@ def _compose_widget_bar_server(img: "Image.Image", widgets: list[dict[str, Any]]
             draw.multiline_text(
                 ((width - text_w) // 2, margin + pad_y - bbox[1]), text, font=f, fill=(255, 255, 255, 255)
             )
+            band_bottom = margin + bar_h
             continue
         if position == "center":
+            # Troncature : le texte doit tenir dans la largeur (ellipsis).
+            max_w = width - 2 * margin - 2 * pad_x
+            fitted = text
+            try:
+                while fitted and draw.textlength(fitted, font=f) > max_w:
+                    fitted = fitted[:-2].rstrip() + "…"
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                fb = draw.multiline_textbbox((0, 0), fitted, font=f)
+            except Exception:  # noqa: BLE001
+                continue
+            fw, fh = fb[2] - fb[0], fb[3] - fb[1]
             draw.rounded_rectangle(
-                ((width - bar_w) // 2, (height - bar_h) // 2, (width + bar_w) // 2, (height + bar_h) // 2),
-                radius=max(4, bar_h // 3),
+                ((width - fw) // 2 - pad_x, (height - fh) // 2 - pad_y,
+                 (width + fw) // 2 + pad_x, (height + fh) // 2 + pad_y),
+                radius=max(4, (fh + 2 * pad_y) // 3),
                 fill=(0, 0, 0, 178),
             )
             draw.multiline_text(
-                ((width - text_w) // 2, (height - text_h) // 2 - bbox[1]),
-                text, font=f, fill=(255, 255, 255, 255),
+                ((width - fw) // 2 - fb[0], (height - fh) // 2 - fb[1]),
+                fitted, font=f, fill=(255, 255, 255, 255),
             )
             continue
         top = position.startswith("top-")
@@ -1429,7 +1445,8 @@ def _compose_widget_bar_server(img: "Image.Image", widgets: list[dict[str, Any]]
             bar_x = width - bar_w - margin
         else:
             bar_x = margin
-        bar_y = margin if top else height - bar_h - margin
+        # Horloge/widget haut : sous le bandeau météo s'il existe.
+        bar_y = (band_bottom + 4) if (top and band_bottom is not None) else (margin if top else height - bar_h - margin)
         draw.rounded_rectangle(
             (bar_x, bar_y, bar_x + bar_w, bar_y + bar_h),
             radius=max(4, bar_h // 3),

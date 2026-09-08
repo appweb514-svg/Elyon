@@ -348,6 +348,7 @@ function KioskScreen({
   const weather = widgets.find((x) => x.position === "top-band");
   const center = widgets.find((x) => x.position === "center");
   const hasClock = widgets.some((x) => x.position === "top-right");
+  const hasWeatherBand = widgets.some((x) => x.position === "top-band");
   const centerText = String(((center?.params ?? {}) as Record<string, unknown>)?.text ?? "");
   const tickerVal =
     ticker && String(ticker.type) === "rss" ? feed?.ticker_text ?? "" : tickerText(ticker);
@@ -372,7 +373,10 @@ function KioskScreen({
         </div>
       )}
       {hasClock && clock && (
-        <div className="elyon-idle-none absolute right-6 top-4 z-10 rounded-lg bg-black/60 px-4 py-2 text-4xl font-semibold">
+        <div
+          className="absolute right-6 z-10 rounded-lg bg-black/60 px-4 py-2 text-4xl font-semibold"
+          style={{ top: hasWeatherBand ? "4.5rem" : "1rem" }}
+        >
           {clock}
         </div>
       )}
