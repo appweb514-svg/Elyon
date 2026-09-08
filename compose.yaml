@@ -25,7 +25,7 @@ services:
     image: busybox:stable
     command: sh -c "chown -R 10001:10001 /lab-enroll"
     volumes:
-      - ./lab-enroll:/lab-enroll
+      - lab-enroll:/lab-enroll
 
   api:
     build: ./apps/api
@@ -42,7 +42,7 @@ services:
     volumes:
       - media:/var/lib/elyon/media
       - signing:/var/lib/elyon
-      - ./lab-enroll:/var/lib/elyon/lab-enroll
+      - lab-enroll:/var/lib/elyon/lab-enroll
     depends_on:
       db:
         condition: service_healthy
@@ -126,7 +126,7 @@ services:
       ELYON_PLAYBACK_RENDERER: dummy
       ELYON_PLAYBACK_SPEED: "1"
     volumes:
-      - ./lab-enroll:/run/elyon:ro
+      - lab-enroll:/run/elyon:ro
       - player-1-data:/var/lib/elyon-player
     depends_on:
       api:
@@ -150,7 +150,7 @@ services:
       ELYON_PLAYBACK_RENDERER: dummy
       ELYON_PLAYBACK_SPEED: "1"
     volumes:
-      - ./lab-enroll:/run/elyon:ro
+      - lab-enroll:/run/elyon:ro
       - player-2-data:/var/lib/elyon-player
     depends_on:
       api:
@@ -161,5 +161,6 @@ volumes:
   pgdata:
   media:
   signing:
+  lab-enroll:
   player-1-data:
   player-2-data:
