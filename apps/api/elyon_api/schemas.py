@@ -68,6 +68,8 @@ class TeamCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     # 0 = illimité ; défaut 15 Go par équipe.
     quota_bytes: int = Field(default=15 * 1024**3, ge=0)
+    # Org cible : requis pour un superadmin sans organisation.
+    org_id: str | None = None
 
 
 class TeamPatch(BaseModel):

@@ -201,6 +201,23 @@ def _get_device(db: Session, user: User, device_id: str) -> Device:
 
 
 @router.post("/{media_id}/show", status_code=201)
+def _can_show_cross_org(db: Session, user: User, media: Media, device: Device) -> bool:
+    """Autorise une diffusion inter-organisation quand l'utilisateur y a droit.
+
+    - superadmin : contrôle la plateforme, pas de périmètre.
+    - équipe partagée : le média appartient à l'équipe de l'utilisateur et le
+      device est dans l'organisation de l'utilisateur.
+    """
+    if user.role == Role.SUPERADMIN:
+        return True
+    return (
+        media.team_id is not None
+        and media.team_id == user.team_id
+        and user.org_id is not None
+        and user.org_id == device.org_id
+    )
+
+
 def show_media(
     media_id: str,
     body: MediaShowRequest,
@@ -215,7 +232,7 @@ def show_media(
     """
     media = _get_media(db, user, media_id)
     device = _get_device(db, user, body.device_id)
-    if media.org_id != device.org_id:
+    if media.org_id != device.org_id and not _can_show_cross_org(db, user, media, device):
         raise HTTPException(
             status_code=400,
             detail="Média hors organisation de l'appareil — déplacez le média dans "

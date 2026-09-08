@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select } from "@/components/ui/select";
 import {
   Table,
   TableBody,
@@ -25,10 +26,13 @@ import {
 type Team = {
   id: string;
   name: string;
+  org_id: string;
   quota_bytes: number;
   used_bytes: number;
   members: number;
 };
+
+type Organization = { id: string; name: string };
 
 function quotaBar(used: number, quota: number) {
   if (quota <= 0) return 0;
@@ -39,6 +43,8 @@ export default function TeamsPage() {
   const [teams, setTeams] = useState<Team[]>([]);
   const [name, setName] = useState("");
   const [quotaGb, setQuotaGb] = useState("");
+  const [orgId, setOrgId] = useState("");
+  const [orgs, setOrgs] = useState<Organization[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
@@ -52,13 +58,20 @@ export default function TeamsPage() {
 
   useEffect(() => {
     reload();
+    api.get<Organization[]>("/api/organizations")
+      .then(setOrgs)
+      .catch(() => undefined);
   }, [reload]);
 
   async function create() {
     if (!name.trim()) return;
     try {
       const bytes = quotaGb ? Math.round(Number(quotaGb) * 1024 ** 3) : 0;
-      await api.post("/api/teams", { name: name.trim(), quota_bytes: bytes });
+      await api.post("/api/teams", {
+        name: name.trim(),
+        quota_bytes: bytes,
+        org_id: orgId || null,
+      });
       setName("");
       setQuotaGb("");
       await reload();
@@ -102,7 +115,7 @@ export default function TeamsPage() {
         <CardHeader>
           <CardTitle>Nouvelle équipe</CardTitle>
         </CardHeader>
-        <CardContent className="grid gap-4 sm:grid-cols-[2fr_1fr_1fr] sm:items-end">
+        <CardContent className="grid gap-4 sm:grid-cols-[2fr_1fr_1fr_1fr] sm:items-end">
           <div className="space-y-2">
             <Label htmlFor="team-name">Nom</Label>
             <Input
@@ -123,6 +136,17 @@ export default function TeamsPage() {
               placeholder="Illimité"
             />
           </div>
+          {orgs.length > 0 && (
+            <div className="space-y-2">
+              <Label htmlFor="team-org">Organisation</Label>
+              <Select id="team-org" value={orgId} onChange={(e) => setOrgId(e.target.value)}>
+                <option value="">— Choisir —</option>
+                {orgs.map((o) => (
+                  <option key={o.id} value={o.id}>{o.name}</option>
+                ))}
+              </Select>
+            </div>
+          )}
           <Button onClick={create} disabled={!name.trim()}>
             Créer
           </Button>
