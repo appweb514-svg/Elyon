@@ -98,7 +98,52 @@ services:
       - traefik.http.routers.elyon-web.entrypoints=web
       - traefik.http.routers.elyon-web.middlewares=elyon-private
 
+
+  player-1:
+    build:
+      context: .
+      dockerfile: player/Dockerfile
+    hostname: rpi-emu-1
+    environment:
+      ELYON_AGENT_SERVER_URL: http://api:8000
+      ELYON_AGENT_SERIAL: emu-rpi-1
+      ELYON_AGENT_NAME: Raspberry émulé 1
+      ELYON_AGENT_ENROLL_CODE_FILE: /run/elyon/emu-rpi-1.code
+      ELYON_AGENT_ENROLL_WAIT_SECONDS: "600"
+      ELYON_PLAYBACK_RENDERER: dummy
+      ELYON_PLAYBACK_SPEED: "1"
+    volumes:
+      - ./lab-enroll:/run/elyon:ro
+      - player-1-data:/var/lib/elyon-player
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  player-2:
+    build:
+      context: .
+      dockerfile: player/Dockerfile
+    hostname: rpi-emu-2
+    environment:
+      ELYON_AGENT_SERVER_URL: http://api:8000
+      ELYON_AGENT_SERIAL: emu-rpi-2
+      ELYON_AGENT_NAME: Raspberry émulé 2
+      ELYON_AGENT_ENROLL_CODE_FILE: /run/elyon/emu-rpi-2.code
+      ELYON_AGENT_ENROLL_WAIT_SECONDS: "600"
+      ELYON_PLAYBACK_RENDERER: dummy
+      ELYON_PLAYBACK_SPEED: "1"
+    volumes:
+      - ./lab-enroll:/run/elyon:ro
+      - player-2-data:/var/lib/elyon-player
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   pgdata:
   media:
   signing:
+  player-1-data:
+  player-2-data:
