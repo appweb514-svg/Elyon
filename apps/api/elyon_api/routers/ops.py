@@ -1263,7 +1263,7 @@ def _compose_widget_bar_server(img: "Image.Image", widgets: list[dict[str, Any]]
             continue
         top = position.startswith("top-")
         if position == "bottom-ticker":
-            _draw_server_ticker(draw, img, text, font, small, now, height)
+            _draw_server_ticker(draw, img, text, font, small_size, now, height)
             continue
         f = font if kind in ("weather", "clock") else small
         try:
@@ -1305,10 +1305,8 @@ def re_sub_html(raw: str) -> str:
 
 
 def _draw_server_ticker(
-    draw: Any, img: "Image.Image", text: str, font: Any, small: Any, now: dt.datetime, height: int
+    draw: Any, img: "Image.Image", text: str, font: Any, small_size: int, now: dt.datetime, height: int
 ) -> None:
-    from PIL import ImageFont
-
     width = img.size[0]
     bar_h = max(18, height // 22)
     draw.rectangle((0, height - bar_h, width, height), fill=(0, 0, 0, 210))
