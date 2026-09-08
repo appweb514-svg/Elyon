@@ -6,6 +6,7 @@ import json
 import time
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
@@ -20,6 +21,7 @@ from elyon_api.deps import (
     require_roles,
     require_site_access,
 )
+from elyon_api.services import widget_feed
 from elyon_api.models import (
     AuditLog,
     Command,
@@ -621,10 +623,14 @@ def wall_device_live(device_id: str, request: Request):
             except Exception:  # noqa: BLE001 — ne jamais casser le flux
                 video = None
             if video is not None and _ffmpeg_available():
-                path, seek = video
+                path, seek, widgets = video
                 sent = 0
                 try:
                     async for jpeg in _video_mjpeg_parts(path, seek):
+                        if widgets:
+                            jpeg = await loop.run_in_executor(
+                                None, _overlay_widgets_jpeg, jpeg, widgets
+                            )
                         yield _part(jpeg, "image/jpeg")
                         sent += 1
                         # Re-vérification ~0,7 s : si le média a changé
@@ -792,8 +798,8 @@ def _find_player_marker(device: Device) -> tuple[Path, Path] | None:
 
 def _live_video_state(
     db_factory, settings, device_id: str
-) -> tuple[str, float] | None:
-    """Vidéo en cours de lecture ? → (chemin absolu, position) ou None.
+) -> tuple[str, float, list[dict[str, Any]]] | None:
+    """Vidéo en cours de lecture ? → (chemin absolu, position, widgets) ou None.
 
     Source de vérité prioritaire : le marqueur du player (`screen-frame.json`,
     écrit au démarrage de chaque lecture — immédiat, sans attendre le
@@ -829,7 +835,7 @@ def _live_video_state(
                         seek = elapsed
                         if duration and duration > 1:
                             seek = min(seek, duration - 0.5)
-                        return str(video_path), seek
+                        return str(video_path), seek, _device_widgets(device)
                 else:
                     return None  # fichier du player plus disponible
             elif info:  # marqueur valide mais non vidéo → image/GIF à l'écran
@@ -859,7 +865,7 @@ def _live_video_state(
             seek = 0.0
         else:
             seek = now - tracked[1]
-        return str(abs_path), seek
+        return str(abs_path), seek, _device_widgets(device)
 
 
 async def _video_mjpeg_parts(path: str, start_seek: float):
@@ -985,6 +991,9 @@ def _render_live_frame(db_factory, settings, device_id: str) -> bytes | None:
             with storage.open_read(rel) as f:
                 data = f.read()
             img: Image.Image = Image.open(_io.BytesIO(data)).convert("RGB")
+            widgets = _device_widgets(device)
+            if widgets:
+                img = _compose_widget_bar_server(img, widgets)
             buf = _io.BytesIO()
             img.save(buf, "JPEG", quality=70)
             return buf.getvalue()
@@ -1154,6 +1163,185 @@ IDLE_SCREEN_HTML = """<!doctype html>
 </body>
 </html>
 """
+
+
+_widget_feed_cache: dict[str, tuple[dict[str, Any], float]] = {}
+
+
+def _widget_feed_entry(kind: str, params: dict[str, Any]) -> dict[str, Any] | None:
+    """Donnée de widget (météo/RSS) avec cache 5 min, jamais bloquante."""
+    key = kind + ":" + str(params.get("city") or params.get("url") or "")
+    cached = _widget_feed_cache.get(key)
+    now = time.monotonic()
+    if cached and now - cached[1] < 300:
+        return cached[0]
+    data: dict[str, Any] | None = None
+    try:
+        if kind == "weather":
+            data = widget_feed.fetch_weather(str(params.get("city") or ""))
+        elif kind == "rss":
+            data = widget_feed.fetch_rss(str(params.get("url") or ""))
+    except Exception:  # noqa: BLE001 — un feed indisponible ne casse pas l'aperçu
+        data = None
+    if data is not None:
+        _widget_feed_cache[key] = (data, now)
+    return cached[0] if (data is None and cached) else data
+
+
+def _device_widgets(device: Device) -> list[dict[str, Any]]:
+    """Widgets visibles de l'écran du device (pour la composition serveur)."""
+    screen = device.screen
+    if screen is None or not screen.widgets_json:
+        return []
+    try:
+        widgets = json.loads(screen.widgets_json)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(widgets, list):
+        return []
+    return [
+        w
+        for w in widgets
+        if isinstance(w, dict) and w.get("visible", True)
+    ]
+
+
+def _compose_widget_bar_server(img: "Image.Image", widgets: list[dict[str, Any]]) -> "Image.Image":
+    """Incruste les widgets d'information sur une image (aperçu serveur).
+
+    Version légère du rendu du player : météo, horloge, texte, ticker
+    défilant (animé d'une frame à l'autre via l'horodatage).
+    """
+    from PIL import ImageDraw, ImageFont
+
+    if not widgets:
+        return img
+    width, height = img.size
+    overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    font_size = max(12, height // 30)
+    try:
+        font = ImageFont.load_default(size=font_size)
+    except TypeError:
+        font = ImageFont.load_default()
+    small_size = max(11, height // 40)
+    try:
+        small = ImageFont.load_default(size=small_size)
+    except TypeError:
+        small = font
+    pad_x, pad_y, margin = max(6, width // 150), max(4, height // 90), max(8, width // 100)
+    now = dt.datetime.now()
+    for widget in widgets:
+        kind = str(widget.get("type") or "")
+        position = str(widget.get("position") or "bottom-left")
+        params = widget.get("params") or {}
+        if kind == "weather":
+            city = str(params.get("city") or "").strip() or "Météo"
+            entry = _widget_feed_entry("weather", params) or {}
+            temp = entry.get("temperature")
+            line1 = f"{city} · {temp:.0f}°C" if isinstance(temp, (int, float)) else city
+            fc = entry.get("forecast") or []
+            line2 = "  ".join(
+                f"{FR_DAYS_W[i]} {round(f.get('max', 0))}°/{round(f.get('min', 0))}°"
+                for i, f in enumerate(fc[:4])
+                if isinstance(f, dict)
+            )
+            text = line1 if not line2 else line1 + "\n" + line2
+        elif kind == "clock":
+            fmt = str(params.get("format") or "HH:MM")
+            text = now.strftime("%H:%M:%S" if fmt == "HH:MM:SS" else "%H:%M")
+        elif kind in ("text", "ticker", "html"):
+            raw = str(params.get("text") or params.get("html") or "")
+            text = re_sub_html(raw) if kind == "html" else raw
+        elif kind == "rss":
+            entry = _widget_feed_entry("rss", params) or {}
+            items = [str(i) for i in (entry.get("items") or []) if str(i).strip()]
+            text = "  •  ".join(items[:5]) if items else "RSS"
+        else:
+            continue
+        if not text:
+            continue
+        top = position.startswith("top-")
+        if position == "bottom-ticker":
+            _draw_server_ticker(draw, img, text, font, small, now, height)
+            continue
+        f = font if kind in ("weather", "clock") else small
+        try:
+            bbox = draw.multiline_textbbox((0, 0), text, font=f)
+        except Exception:  # noqa: BLE001
+            continue
+        text_w, text_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        if text_w <= 0:
+            continue
+        bar_w, bar_h = text_w + 2 * pad_x, text_h + 2 * pad_y
+        if position.endswith("-center"):
+            bar_x = (width - bar_w) // 2
+        elif position.endswith("-right"):
+            bar_x = width - bar_w - margin
+        else:
+            bar_x = margin
+        bar_y = margin if top else height - bar_h - margin
+        draw.rounded_rectangle(
+            (bar_x, bar_y, bar_x + bar_w, bar_y + bar_h),
+            radius=max(4, bar_h // 3),
+            fill=(0, 0, 0, 178),
+        )
+        draw.multiline_text(
+            (bar_x + pad_x - bbox[0], bar_y + pad_y - bbox[1]), text, font=f, fill=(255, 255, 255, 255)
+        )
+    from PIL import Image as _Image
+
+    return _Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+
+
+FR_DAYS_W = ["dim", "lun", "mar", "mer", "jeu", "ven", "sam"]
+
+
+def re_sub_html(raw: str) -> str:
+    import html as _html
+    import re as _re
+
+    return _html.unescape(_re.sub(r"<[^>]+>", " ", raw))
+
+
+def _draw_server_ticker(
+    draw: Any, img: "Image.Image", text: str, font: Any, small: Any, now: dt.datetime, height: int
+) -> None:
+    from PIL import ImageFont
+
+    width = img.size[0]
+    bar_h = max(18, height // 22)
+    draw.rectangle((0, height - bar_h, width, height), fill=(0, 0, 0, 210))
+    try:
+        tw = draw.textlength(text, font=font)
+    except Exception:  # noqa: BLE001
+        tw = len(text) * small_size
+    offset = (now.timestamp() * 60) % max(tw + width, 1)
+    x = width - offset
+    draw.text((x, height - bar_h + (bar_h - small_size) // 2 - 2), text, font=font, fill=(255, 255, 255, 255))
+    if x + tw < width:
+        draw.text(
+            (x + tw + width // 10, height - bar_h + (bar_h - small_size) // 2 - 2),
+            text, font=font, fill=(255, 255, 255, 255),
+        )
+
+
+def _overlay_widgets_jpeg(jpeg: bytes, widgets: list[dict[str, Any]]) -> bytes:
+    """Applique la barre de widgets sur une frame JPEG (aperçu vidéo)."""
+    if not widgets:
+        return jpeg
+    import io as _io
+
+    from PIL import Image
+
+    try:
+        img = Image.open(_io.BytesIO(jpeg)).convert("RGB")
+        composed = _compose_widget_bar_server(img, widgets)
+        out = _io.BytesIO()
+        composed.save(out, "JPEG", quality=70)
+        return out.getvalue()
+    except Exception:  # noqa: BLE001
+        return jpeg
 
 
 def _screen_ticker(device: Device) -> tuple[str | None, str | None]:

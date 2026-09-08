@@ -10,7 +10,7 @@ import { Eye, EyeOff, Rss, Settings2, CloudSun, Type, Clock3, Code2, MoveHorizon
 
 export type Widget = {
   id?: string;
-  type: string; // weather | rss | text | ticker | clock | html
+  type: string; // weather | rss | ticker | text | clock | html
   position: string; // top-left | top-right | bottom-left | bottom-center | bottom-right | bottom-ticker
   visible: boolean;
   locked?: boolean; // widget de barre (haut/bas) : position non modifiable
@@ -32,7 +32,7 @@ const POSITIONS = [
   { value: "bottom-right", label: "Bas droite" },
 ];
 
-/** Widget verrouillé = élément d'une barre (météo/horloge en haut, ticker RSS en bas). */
+/** Widget verrouillé = élément d'une barre (météo/horloge en haut, ticker RSS/texte en bas). */
 function isBarWidget(w: Widget): boolean {
   return w.locked === true || ["top-left", "top-right", "bottom-ticker"].includes(w.position);
 }
@@ -82,7 +82,7 @@ const SAMPLE_FORECAST: ForecastDay[] = [
   { date: "", max: 21, min: 12, code: 0 },
 ];
 
-/** Barre de widgets : liste + édition inline (position, paramètres, visibilité).
+/** Barre de widgets : liste + configuration dépliable sous chaque widget.
  *
  * `openId` est contrôlé par le parent (persistant à travers les re-renders) :
  * le rechargement périodique de la page ne referme plus le menu de réglages.
@@ -110,7 +110,10 @@ export function WidgetBar({
     if (!meta) return;
     const w: Widget = {
       type,
-      position: type === "ticker" ? "bottom-ticker" : ["bottom-left", "bottom-center", "bottom-right"][widgets.length % 3],
+      position:
+        type === "ticker"
+          ? "bottom-ticker"
+          : ["bottom-left", "bottom-center", "bottom-right"][widgets.length % 3],
       locked: type === "ticker" ? true : undefined,
       visible: true,
       params:
@@ -135,7 +138,7 @@ export function WidgetBar({
     onChange(next);
   }
 
-  // --- Barres d'information (haut : météo + heure, bas : ticker RSS) ---
+  // --- Barres d'information (haut : météo + heure, bas : ticker RSS/texte) ---
 
   function findBar(type: string): Widget | undefined {
     return widgets.find((w) => w.type === type && isBarWidget(w));
@@ -183,9 +186,6 @@ export function WidgetBar({
       setLoading(null);
     }
   }
-
-  const selectedIndex = widgets.findIndex((widget, index) => (widget.id ?? String(index)) === openId);
-  const selected = selectedIndex >= 0 ? widgets[selectedIndex] : null;
 
   function widgetPosition(position: string): string {
     switch (position) {
@@ -267,12 +267,126 @@ export function WidgetBar({
             : widget.params.url
               ? "RSS : dernières actualités…"
               : "RSS : configurez l'URL")}
-        {widget.type === "text" && String(widget.params.text ?? "")}
         {widget.type === "ticker" && String(widget.params.text ?? "")}
+        {widget.type === "text" && String(widget.params.text ?? "")}
         {widget.type === "clock" && <Clock3 className="mr-1 inline h-3.5 w-3.5" />}
         {widget.type === "clock" && (widget.params.format ?? "HH:MM") === "HH:MM:SS" ? "14:32:08" : "14:32"}
         {widget.type === "html" && <span dangerouslySetInnerHTML={{ __html: String(widget.params.html ?? "") }} />}
       </>
+    );
+  }
+
+  /** Panneau de configuration déployé sous la ligne du widget. */
+  function renderConfigPanel(w: Widget, index: number) {
+    return (
+      <div className="mt-3 space-y-3 rounded-lg border bg-muted/30 p-3">
+        <div className="flex items-start gap-3">
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold">Configuration du widget</p>
+            <p className="text-xs text-muted-foreground">
+              Les changements sont visibles immédiatement dans l&apos;aperçu.
+            </p>
+          </div>
+          <Button type="button" size="icon" variant="ghost" onClick={() => onOpenChange(null)} aria-label="Fermer">
+            <X />
+          </Button>
+        </div>
+        <div className="rounded-lg border bg-muted/40 p-3">
+          <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Prévisualisation en temps réel</p>
+          <div className="relative aspect-video overflow-hidden rounded-md bg-gradient-to-br from-slate-200 to-slate-300 dark:from-slate-800 dark:to-slate-950">
+            <div className="flex h-full items-center justify-center text-[10px] text-muted-foreground">Contenu principal</div>
+            <div className={`absolute bottom-2 ${widgetPosition(w.position)} max-w-[calc(100%-1rem)]`}>
+              <span className="max-w-full rounded-md bg-black/70 px-3 py-1.5 text-xs text-white shadow">
+                {renderWidgetContent(w)}
+              </span>
+            </div>
+          </div>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          {!isBarWidget(w) && (
+            <div className="space-y-1">
+              <Label className="text-xs">Emplacement</Label>
+              <Select value={w.position} onChange={(e) => update(index, { position: e.target.value })}>
+                {POSITIONS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
+              </Select>
+            </div>
+          )}
+          {w.type === "weather" && (
+            <div className="space-y-1">
+              <Label className="text-xs">Ville</Label>
+              <div className="flex gap-1">
+                <Input value={String(w.params.city ?? "")} onChange={(e) => update(index, { params: { ...w.params, city: e.target.value } })} placeholder="Paris" />
+                <Button type="button" size="sm" variant="outline" onClick={() => previewWeather(index, String(w.params.city ?? ""))}>Tester</Button>
+              </div>
+              {loading === `w${index}` && <p className="text-xs text-muted-foreground">Interrogation…</p>}
+              {preview[`w${index}`] != null &&
+                (() => {
+                  const data = preview[`w${index}`] as {
+                    place?: string;
+                    temperature?: number;
+                    code?: number;
+                    forecast?: ForecastDay[];
+                  };
+                  if (typeof data.temperature !== "number") return <p className="text-xs text-muted-foreground">Ville introuvable</p>;
+                  return (
+                    <div className="space-y-0.5">
+                      <p className="text-xs text-muted-foreground">
+                        {data.place} : {Math.round(data.temperature)}°C {weatherEmoji(data.code)}
+                      </p>
+                      <ForecastRow forecast={data.forecast ?? []} />
+                    </div>
+                  );
+                })()}
+            </div>
+          )}
+          {w.type === "rss" && (
+            <div className="space-y-1 sm:col-span-1">
+              <Label className="text-xs">URL du flux RSS</Label>
+              <Input value={String(w.params.url ?? "")} onChange={(e) => update(index, { params: { ...w.params, url: e.target.value } })} placeholder="https://exemple.fr/rss.xml" />
+            </div>
+          )}
+          {w.type === "ticker" && (
+            <>
+              <div className="space-y-1 sm:col-span-2">
+                <Label className="text-xs">Texte défilant</Label>
+                <Input value={String(w.params.text ?? "")} onChange={(e) => update(index, { params: { ...w.params, text: e.target.value } })} />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Vitesse de défilement</Label>
+                <Select value={String(w.params.speed ?? "normal")} onChange={(e) => update(index, { params: { ...w.params, speed: e.target.value } })}>
+                  <option value="slow">Lente</option>
+                  <option value="normal">Normale</option>
+                  <option value="fast">Rapide</option>
+                </Select>
+              </div>
+            </>
+          )}
+          {w.type === "text" && (
+            <div className="space-y-1 sm:col-span-2">
+              <Label className="text-xs">Texte à afficher</Label>
+              <Input value={String(w.params.text ?? "")} onChange={(e) => update(index, { params: { ...w.params, text: e.target.value } })} />
+            </div>
+          )}
+          {w.type === "clock" && (
+            <div className="space-y-1">
+              <Label className="text-xs">Format</Label>
+              <Select value={String(w.params.format ?? "HH:MM")} onChange={(e) => update(index, { params: { ...w.params, format: e.target.value } })}>
+                <option value="HH:MM">Heure:Minute</option>
+                <option value="HH:MM:SS">Heure:Minute:Seconde</option>
+              </Select>
+            </div>
+          )}
+          {w.type === "html" && (
+            <div className="space-y-1 sm:col-span-2">
+              <Label className="text-xs">HTML à afficher</Label>
+              <Input value={String(w.params.html ?? "")} onChange={(e) => update(index, { params: { ...w.params, html: e.target.value } })} />
+            </div>
+          )}
+        </div>
+        <div className="flex justify-end">
+          <Button type="button" onClick={() => onOpenChange(null)}>Terminer</Button>
+        </div>
+      </div>
     );
   }
 
@@ -367,121 +481,6 @@ export function WidgetBar({
               </button>
             );
           })}
-          {selected && selectedIndex >= 0 && (
-            <div className="absolute inset-0 z-10 flex items-center justify-center bg-slate-950/35 p-3 sm:p-6">
-              <div
-                role="dialog"
-                aria-modal="true"
-                aria-label={`Configuration du widget ${TYPE_META[selected.type]?.label ?? ""}`}
-                className="max-h-full w-full max-w-md overflow-y-auto rounded-xl border bg-card p-4 text-card-foreground shadow-2xl sm:p-5"
-              >
-                <div className="mb-4 flex items-start gap-3">
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-semibold">Configuration du widget</p>
-                    <p className="text-xs text-muted-foreground">Les changements sont visibles immédiatement dans l&apos;aperçu.</p>
-                  </div>
-                  <Button type="button" size="icon" variant="ghost" onClick={() => onOpenChange(null)} aria-label="Fermer">
-                    <X />
-                  </Button>
-                </div>
-                <div className="mb-4 rounded-lg border bg-muted/40 p-3">
-                  <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Prévisualisation en temps réel</p>
-                  <div className="relative aspect-video overflow-hidden rounded-md bg-gradient-to-br from-slate-200 to-slate-300 dark:from-slate-800 dark:to-slate-950">
-                    <div className="flex h-full items-center justify-center text-[10px] text-muted-foreground">Contenu principal</div>
-                    <div className={`absolute bottom-2 ${widgetPosition(selected.position)} max-w-[calc(100%-1rem)]`}>
-                      <span className="max-w-full rounded-md bg-black/70 px-3 py-1.5 text-xs text-white shadow">
-                        {renderWidgetContent(selected)}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  {!isBarWidget(selected) && (
-                    <div className="space-y-1">
-                      <Label className="text-xs">Emplacement</Label>
-                      <Select value={selected.position} onChange={(e) => update(selectedIndex, { position: e.target.value })}>
-                        {POSITIONS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
-                      </Select>
-                    </div>
-                  )}
-                  {selected.type === "weather" && (
-                    <div className="space-y-1">
-                      <Label className="text-xs">Ville</Label>
-                      <div className="flex gap-1">
-                        <Input value={String(selected.params.city ?? "")} onChange={(e) => update(selectedIndex, { params: { ...selected.params, city: e.target.value } })} placeholder="Paris" />
-                        <Button type="button" size="sm" variant="outline" onClick={() => previewWeather(selectedIndex, String(selected.params.city ?? ""))}>Tester</Button>
-                      </div>
-                      {loading === `w${selectedIndex}` && <p className="text-xs text-muted-foreground">Interrogation…</p>}
-                      {preview[`w${selectedIndex}`] != null &&
-                        (() => {
-                          const data = preview[`w${selectedIndex}`] as {
-                            place?: string;
-                            temperature?: number;
-                            code?: number;
-                            forecast?: ForecastDay[];
-                          };
-                          if (typeof data.temperature !== "number") return <p className="text-xs text-muted-foreground">Ville introuvable</p>;
-                          return (
-                            <div className="space-y-0.5">
-                              <p className="text-xs text-muted-foreground">
-                                {data.place} : {Math.round(data.temperature)}°C {weatherEmoji(data.code)}
-                              </p>
-                              <ForecastRow forecast={data.forecast ?? []} />
-                            </div>
-                          );
-                        })()}
-                    </div>
-                  )}
-                  {selected.type === "rss" && (
-                    <div className="space-y-1 sm:col-span-1">
-                      <Label className="text-xs">URL du flux RSS</Label>
-                      <Input value={String(selected.params.url ?? "")} onChange={(e) => update(selectedIndex, { params: { ...selected.params, url: e.target.value } })} placeholder="https://exemple.fr/rss.xml" />
-                    </div>
-                  )}
-                  {selected.type === "ticker" && (
-                    <>
-                      <div className="space-y-1 sm:col-span-2">
-                        <Label className="text-xs">Texte défilant</Label>
-                        <Input value={String(selected.params.text ?? "")} onChange={(e) => update(selectedIndex, { params: { ...selected.params, text: e.target.value } })} />
-                      </div>
-                      <div className="space-y-1">
-                        <Label className="text-xs">Vitesse de défilement</Label>
-                        <Select value={String(selected.params.speed ?? "normal")} onChange={(e) => update(selectedIndex, { params: { ...selected.params, speed: e.target.value } })}>
-                          <option value="slow">Lente</option>
-                          <option value="normal">Normale</option>
-                          <option value="fast">Rapide</option>
-                        </Select>
-                      </div>
-                    </>
-                  )}
-                  {selected.type === "text" && (
-                    <div className="space-y-1 sm:col-span-2">
-                      <Label className="text-xs">Texte à afficher</Label>
-                      <Input value={String(selected.params.text ?? "")} onChange={(e) => update(selectedIndex, { params: { ...selected.params, text: e.target.value } })} />
-                    </div>
-                  )}
-                  {selected.type === "clock" && (
-                    <div className="space-y-1">
-                      <Label className="text-xs">Format</Label>
-                      <Select value={String(selected.params.format ?? "HH:MM")} onChange={(e) => update(selectedIndex, { params: { ...selected.params, format: e.target.value } })}>
-                        <option value="HH:MM">Heure:Minute</option>
-                        <option value="HH:MM:SS">Heure:Minute:Seconde</option>
-                      </Select>
-                    </div>
-                  )}
-                  {selected.type === "html" && (
-                    <div className="space-y-1 sm:col-span-2">
-                      <Label className="text-xs">HTML à afficher</Label>
-                      <Input value={String(selected.params.html ?? "")} onChange={(e) => update(selectedIndex, { params: { ...selected.params, html: e.target.value } })} />
-                    </div>
-                  )}
-                </div>
-                <div className="mt-4 flex justify-end">
-                  <Button type="button" onClick={() => onOpenChange(null)}>Terminer</Button>
-                </div>
-              </div>
-            </div>
-          )}
         </div>
       )}
 
@@ -507,6 +506,7 @@ export function WidgetBar({
                   ✕
                 </Button>
               </div>
+              {openId === id && renderConfigPanel(w, i)}
             </li>
           );
         })}

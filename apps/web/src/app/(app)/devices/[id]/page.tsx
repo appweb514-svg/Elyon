@@ -70,6 +70,8 @@ type WallFrame = {
   current_media_id: string | null;
   current_media_name: string | null;
   current_media_kind: string | null;
+  ticker_text?: string | null;
+  ticker_speed?: string | null;
 };
 
 type Screen = {
@@ -702,12 +704,31 @@ export default function DeviceDetailPage() {
                     comme un vrai retour vidéo. La clé force la reconnexion
                     quand le média affiché change. */}
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  key={liveBust}
-                  src={liveSrc}
-                  alt={wall?.current_media_name ?? "aperçu écran"}
-                  className="h-full w-full object-contain"
-                />
+                {wall?.player_state !== "playing" && wall?.player_state !== "blank" ? (
+                  <div className="elyon-idle absolute inset-0 flex flex-col items-center justify-center gap-3 overflow-hidden">
+                    <span className="elyon-idle-orb left-[8%] top-[15%] h-24 w-24 bg-sky-500" />
+                    <span className="elyon-idle-orb right-[10%] top-[55%] h-32 w-32 bg-indigo-500" style={{ animationDelay: "3s" }} />
+                    <span className="elyon-idle-orb bottom-[10%] left-[45%] h-20 w-20 bg-cyan-400" style={{ animationDelay: "6s" }} />
+                    <span className="elyon-idle-text text-lg font-semibold tracking-wide text-slate-100">
+                      Affichage en préparation
+                    </span>
+                    {wall?.ticker_text ? (
+                      <div className="absolute bottom-0 left-0 right-0 overflow-hidden bg-black/70 px-3 py-1.5 text-xs whitespace-nowrap text-slate-100">
+                        <span className={`elyon-ticker inline-block ${wall.ticker_speed && wall.ticker_speed !== "normal" ? `elyon-ticker-${wall.ticker_speed}` : ""}`}>
+                          {wall.ticker_text}
+                        </span>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : (
+                  /* eslint-disable-next-line @next/next/no-img-element */
+                  <img
+                    key={liveBust}
+                    src={liveSrc}
+                    alt={wall?.current_media_name ?? "aperçu écran"}
+                    className="h-full w-full object-contain"
+                  />
+                )}
               </TvFrame>
               <div className="mx-auto mt-4 w-full max-w-3xl space-y-2">
                 <div className="flex flex-wrap items-center justify-between gap-2">
