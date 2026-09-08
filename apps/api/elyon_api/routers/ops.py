@@ -996,6 +996,8 @@ def _render_live_frame(db_factory, settings, device_id: str) -> bytes | None:
             widgets = _device_widgets(device)
             if widgets:
                 img = _compose_widget_bar_server(img, widgets)
+            # Plafond de taille pour le flux MJPEG (pages PDF 120 dpi = 1 Mo+).
+            img.thumbnail((1280, 1280))
             buf = _io.BytesIO()
             img.save(buf, "JPEG", quality=70)
             return buf.getvalue()
