@@ -37,6 +37,7 @@ type Device = {
   id: string;
   name: string;
   serial: string;
+  org_id?: string | null;
   status: string;
   computed_status?: string | null;
   site_id: string | null;
