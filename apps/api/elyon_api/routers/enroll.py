@@ -22,6 +22,7 @@ from elyon_api.models import (
     Event,
     EventLevel,
     Role,
+    Screen,
     Site,
     User,
 )
@@ -182,6 +183,15 @@ def patch_device(
         device.site_id = site.id
     if body.is_preview is not None:
         device.is_preview = body.is_preview
+    if body.screen_id is not None:
+        # Dissocier l'ancien écran du device, associer le nouveau.
+        for other in db.scalars(select(Screen).where(Screen.device_id == device.id)):
+            other.device_id = None
+        if body.screen_id:
+            screen = db.get(Screen, body.screen_id)
+            if screen is None or screen.org_id != device.org_id:
+                raise HTTPException(status_code=400, detail="Écran invalide")
+            screen.device_id = device.id
     db.commit()
     db.refresh(device)
     audit(db, "device.update", "device", device.id, user=user)

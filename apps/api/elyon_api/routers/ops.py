@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import datetime as dt
 import html as html_mod
+import ipaddress
 import json
+import re
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -436,6 +438,74 @@ def queue_stop(
     db.commit()
     db.refresh(cmd)
     return {"command_id": cmd.id}
+
+
+
+@router.post("/devices/{device_id}/network", status_code=201)
+def set_device_network(
+    device_id: str,
+    body: dict,
+    user: User = Depends(require_permission(Permission.DEVICE_COMMAND)),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Configuration réseau du Raspberry (appliquée par l'agent).
+
+    mode=dhcp : retour au DHCP (ip/passerelle/dns ignorés).
+    mode=static : ip (CIDR ou adresse + netmask), gateway requise, dns[2] max.
+    hostname : renommage système (hostnamectl).
+    """
+    device = db.get(Device, device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail="Appareil introuvable")
+    require_site_access(db, user, device.org_id)
+    mode = str(body.get("mode") or "dhcp").lower()
+    if mode not in ("dhcp", "static"):
+        raise HTTPException(status_code=400, detail="mode doit être dhcp ou static")
+    cfg: dict[str, Any] = {"mode": mode}
+    dns = body.get("dns") or []
+    if not isinstance(dns, list) or len(dns) > 2 or any(
+        not _is_valid_ip(str(d)) for d in dns
+    ):
+        raise HTTPException(status_code=400, detail="dns : 2 adresses IP max")
+    if dns:
+        cfg["dns"] = [str(d) for d in dns]
+    hostname = str(body.get("hostname") or "").strip()
+    if hostname and not re.fullmatch(r"[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?", hostname):
+        raise HTTPException(status_code=400, detail="hostname invalide")
+    if hostname:
+        cfg["hostname"] = hostname
+    if mode == "static":
+        ip = str(body.get("ip") or "").strip()
+        netmask = str(body.get("netmask") or "").strip()
+        gateway = str(body.get("gateway") or "").strip()
+        if "/" in ip:
+            addr, _, cidr = ip.partition("/")
+            if not (_is_valid_ip(addr) and cidr.isdigit() and 0 <= int(cidr) <= 32):
+                raise HTTPException(status_code=400, detail="ip (CIDR) invalide")
+            cfg["ip"] = ip
+        elif _is_valid_ip(ip) and (_is_valid_ip(netmask) or (netmask.isdigit() and 0 <= int(netmask) <= 32)):
+            cfg["ip"] = ip
+            cfg["netmask"] = netmask
+        else:
+            raise HTTPException(status_code=400, detail="ip / masque invalide")
+        if not _is_valid_ip(gateway):
+            raise HTTPException(status_code=400, detail="passerelle invalide")
+        cfg["gateway"] = gateway
+    device.network_json = json.dumps(cfg)
+    cmd = Command(device_id=device.id, type=CommandType.NETWORK, payload=json.dumps(cfg))
+    db.add(cmd)
+    audit(db, "device.network", "device", device.id, detail=json.dumps(cfg), user=user)
+    db.commit()
+    db.refresh(cmd)
+    return {"command_id": cmd.id, "config": cfg}
+
+
+def _is_valid_ip(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
 
 
 @router.post("/devices/{device_id}/commands", status_code=201)

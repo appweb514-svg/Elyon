@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re as _re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -104,6 +105,28 @@ def make_file_handlers(data_dir: Path) -> dict[str, Callable[[Command], None]]:
         (data_dir / "reboot-requested").write_text("1", encoding="utf-8")
         raise SystemExit(0)
 
+    def network(command: Command) -> None:
+        """Applique la configuration réseau (vrai Raspberry uniquement).
+
+        Sur les players émulés/conteneurisés : no-op acquitté (le réseau du
+        container est géré par l'hôte). Sur un vrai Pi : hostname via
+        hostnamectl + interface via NetworkManager (nmcli) ou dhcpcd.conf.
+        Exige root ; un redémarrage réseau peut couper la connectivité.
+        """
+        payload = json.loads(command.payload or "{}")
+        env_path = data_dir / "network-applied.json"
+        if Path("/.dockerenv").exists():
+            env_path.write_text(json.dumps({"skipped": "emulated"}), encoding="utf-8")
+            return
+        hostname = str(payload.get("hostname") or "").strip()
+        if hostname:
+            _run_root(["hostnamectl", "set-hostname", hostname])
+            Path("/etc/hostname").write_text(hostname + "\n", encoding="utf-8")
+        mode = str(payload.get("mode") or "dhcp")
+        if mode == "static":
+            _apply_static_network(payload)
+        env_path.write_text(json.dumps({"applied": payload}), encoding="utf-8")
+
     return {
         "blank": blank,
         "unblank": unblank,
@@ -112,7 +135,92 @@ def make_file_handlers(data_dir: Path) -> dict[str, Callable[[Command], None]]:
         "show": show,
         "stop_show": stop_show,
         "reboot": reboot,
+        "network": network,
     }
+
+
+def _run_root(args: list[str]) -> None:
+    import subprocess
+
+    completed = subprocess.run(  # noqa: S603
+        args, check=False, capture_output=True, stdin=subprocess.DEVNULL, timeout=30
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            (completed.stderr.decode(errors="replace") or " ".join(args)).strip()[:300]
+        )
+
+
+def _apply_static_network(payload: dict) -> None:
+    """IP statique : NetworkManager si présent, sinon dhcpcd.conf."""
+    import shutil
+    import subprocess
+
+    iface = payload.get("interface") or _primary_iface()
+    ip = str(payload.get("ip") or "")
+    netmask = str(payload.get("netmask") or "")
+    gateway = str(payload.get("gateway") or "")
+    dns = [str(d) for d in (payload.get("dns") or [])][:2]
+    if shutil.which("nmcli"):
+        conn = subprocess.run(  # noqa: S603
+            ["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active"],
+            check=False, capture_output=True, text=True, timeout=15,
+        )
+        profile = None
+        for line in conn.stdout.splitlines():
+            name, _, dev = line.partition(":")
+            if dev.strip() == iface or (not iface and name.strip() == "Wired connection 1"):
+                profile = name.strip()
+                break
+        profile = profile or "Wired connection 1"
+        if "/" in ip:
+            address = ip
+        else:
+            cidr = netmask if netmask.isdigit() else _netmask_to_cidr(netmask)
+            address = f"{ip}/{cidr}"
+        args = [
+            "nmcli", "connection", "modify", profile,
+            "ipv4.method", "manual", "ipv4.addresses", address,
+            "ipv4.gateway", gateway,
+        ]
+        if dns:
+            args += ["ipv4.dns", ",".join(dns)]
+        _run_root(args)
+        _run_root(["nmcli", "connection", "down", profile])
+        _run_root(["nmcli", "connection", "up", profile])
+        return
+    conf = Path("/etc/dhcpcd.conf")
+    if conf.exists():
+        block = f"\ninterface {iface}\nstatic ip_address={ip if '/' in ip else ip + '/' + (netmask if netmask.isdigit() else _netmask_to_cidr(netmask))}\n"
+        if gateway:
+            block += f"static routers={gateway}\n"
+        for d in dns:
+            block += f"static domain_name_servers={d}\n"
+        txt = conf.read_text(encoding="utf-8")
+        marker = f"## elyon-{iface}"
+        txt = _re.sub(marker + r".*?(?=\n## |\Z)", "", txt, flags=_re.S)
+        conf.write_text(txt.rstrip() + f"\n{marker}\n" + block, encoding="utf-8")
+        return
+    raise RuntimeError("Ni NetworkManager ni dhcpcd : configuration réseau impossible")
+
+
+def _primary_iface() -> str:
+    import glob
+
+    for candidate in ("eth0", "enp0s3", "wlan0"):
+        if Path(f"/sys/class/net/{candidate}").exists():
+            return candidate
+    wired = sorted(glob.glob("/sys/class/net/e*"))
+    if wired:
+        return Path(wired[0]).name
+    return "eth0"
+
+
+def _netmask_to_cidr(netmask: str) -> str:
+    try:
+        return str(sum(bin(int(octet)).count("1") for octet in netmask.split(".")))
+    except ValueError:
+        return "24"
 
 
 def make_dispatcher(

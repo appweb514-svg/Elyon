@@ -53,8 +53,11 @@ type Device = {
   storage_free_bytes?: number | null;
   lan_ip?: string | null;
   wifi_ssid?: string | null;
+  network?: Record<string, unknown> | null;
   created_at: string;
 };
+
+type Site = { id: string; name: string };
 
 type QueueItem = {
   media_id: string;
@@ -169,7 +172,23 @@ export default function DeviceDetailPage() {
   const [selectedMedia, setSelectedMedia] = useState("");
   const [itemDuration, setItemDuration] = useState("10");
   const [editingBusy, setEditingBusy] = useState(false);
-  const [tab, setTab] = useState<"live" | "contenu" | "disposition">("live");
+  const [tab, setTab] = useState<"live" | "contenu" | "disposition" | "parametres">("live");
+  const [sites, setSites] = useState<Site[]>([]);
+  const [siteScreens, setSiteScreens] = useState<Screen[]>([]);
+  const [genName, setGenName] = useState("");
+  const [genSite, setGenSite] = useState("");
+  const [genScreen, setGenScreen] = useState("");
+  const [genPreview, setGenPreview] = useState(false);
+  const [formInit, setFormInit] = useState(false);
+  const [savingGeneral, setSavingGeneral] = useState(false);
+  const [netMode, setNetMode] = useState("dhcp");
+  const [netIp, setNetIp] = useState("");
+  const [netMask, setNetMask] = useState("24");
+  const [netGw, setNetGw] = useState("");
+  const [netDns1, setNetDns1] = useState("");
+  const [netDns2, setNetDns2] = useState("");
+  const [netHostname, setNetHostname] = useState("");
+  const [savingNet, setSavingNet] = useState(false);
   const [layout, setLayout] = useState<ScreenLayout | null>(null);
   const [savingLayout, setSavingLayout] = useState(false);
   const [widgets, setWidgets] = useState<Widget[]>([]);
@@ -246,6 +265,78 @@ export default function DeviceDetailPage() {
     liveKey.current += 1;
     setLiveBust((b) => b + 1);
   }, [currentMediaKey]);
+
+  async function loadScreens(siteId: string) {
+    if (!siteId) {
+      setSiteScreens([]);
+      return;
+    }
+    const list = await api.get<Screen[]>(`/api/sites/${siteId}/screens`).catch(() => [] as Screen[]);
+    setSiteScreens(list as Screen[]);
+  }
+
+  useEffect(() => {
+    api.get<Site[]>("/api/sites").then((list) => setSites(list as Site[])).catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    if (!device || formInit) return;
+    setGenName(device.name);
+    setGenSite(device.site_id ?? "");
+    setGenScreen(device.screen_id ?? "");
+    setGenPreview(Boolean(device.is_preview));
+    const net = (device.network ?? {}) as Record<string, string>;
+    setNetMode(String(net.mode ?? "dhcp"));
+    setNetIp(String(net.ip ?? ""));
+    setNetMask(String(net.netmask ?? "24"));
+    setNetGw(String(net.gateway ?? ""));
+    const dns = Array.isArray(net.dns) ? net.dns : [];
+    setNetDns1(String(dns[0] ?? ""));
+    setNetDns2(String(dns[1] ?? ""));
+    setNetHostname(String(net.hostname ?? ""));
+    setFormInit(true);
+    if (device.site_id) void loadScreens(device.site_id);
+  }, [device, formInit]);
+
+  async function saveGeneral() {
+    try {
+      setSavingGeneral(true);
+      await api.patch(`/api/devices/${deviceId}`, {
+        name: genName.trim() || undefined,
+        site_id: genSite || undefined,
+        screen_id: genScreen || undefined,
+        is_preview: genPreview,
+      });
+      setNotice("Paramètres enregistrés.");
+      setFormInit(false);
+      await refreshAll();
+    } catch (err) {
+      setError(String((err as Error).message ?? err));
+    } finally {
+      setSavingGeneral(false);
+    }
+  }
+
+  async function saveNetwork() {
+    try {
+      setSavingNet(true);
+      await api.post(`/api/devices/${deviceId}/network`, {
+        mode: netMode,
+        ip: netMode === "static" ? netIp.trim() : undefined,
+        netmask: netMode === "static" ? netMask.trim() : undefined,
+        gateway: netMode === "static" ? netGw.trim() : undefined,
+        dns: [netDns1.trim(), netDns2.trim()].filter(Boolean),
+        hostname: netHostname.trim() || undefined,
+      });
+      setNotice("Configuration réseau envoyée au Raspberry (commande NETWORK).");
+      setFormInit(false);
+      await refreshAll();
+    } catch (err) {
+      setError(String((err as Error).message ?? err));
+    } finally {
+      setSavingNet(false);
+    }
+  }
 
   async function loadQueue() {
     try {
@@ -682,6 +773,7 @@ export default function DeviceDetailPage() {
             ["live", "Aperçu en direct"],
             ["contenu", "Contenu & priorités"],
             ["disposition", "Disposition de l'écran"],
+            ["parametres", "Paramètres"],
           ] as const
         ).map(([key, label]) => (
           <Button key={key} variant={tab === key ? "default" : "ghost"} size="sm" onClick={() => setTab(key)}>
@@ -1238,6 +1330,114 @@ export default function DeviceDetailPage() {
             )}
           </CardContent>
         </Card>
+      )}
+
+      {tab === "parametres" && device && (
+        <div className="grid gap-4 lg:grid-cols-2">
+          <Card>
+            <CardHeader>
+              <CardTitle>Général</CardTitle>
+              <CardDescription>Nom, site, écran rattaché et aperçu administrateur.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="space-y-1">
+                <Label>Nom de l&apos;appareil</Label>
+                <Input value={genName} onChange={(e) => setGenName(e.target.value)} />
+              </div>
+              <div className="space-y-1">
+                <Label>Site</Label>
+                <Select value={genSite} onChange={(e) => { setGenSite(e.target.value); loadScreens(e.target.value); }}>
+                  <option value="">— Aucun —</option>
+                  {sites.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <Label>Écran rattaché</Label>
+                <Select value={genScreen} onChange={(e) => setGenScreen(e.target.value)}>
+                  <option value="">— Aucun —</option>
+                  {siteScreens.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </Select>
+              </div>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={genPreview}
+                  onChange={(e) => setGenPreview(e.target.checked)}
+                />
+                Aperçu administrateur (brouillon non publié)
+              </label>
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span>Série : <code>{device.serial}</code></span>
+                <span>· Statut : {device.status}</span>
+              </div>
+              <Button onClick={saveGeneral} disabled={savingGeneral}>
+                {savingGeneral ? "Enregistrement…" : "Enregistrer"}
+              </Button>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Réseau</CardTitle>
+              <CardDescription>
+                IP, passerelle, DNS et nom d&apos;hôte appliqués par l&apos;agent sur le
+                Raspberry. Sur les players émulés, la commande est ignorée (réseau du conteneur).
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="rounded-md bg-muted/60 px-3 py-2 text-xs text-muted-foreground">
+                IP remontée : <strong>{device.lan_ip ?? "—"}</strong>
+                {device.wifi_ssid ? <> · Wi-Fi : <strong>{device.wifi_ssid}</strong></> : null}
+              </div>
+              <div className="space-y-1">
+                <Label>Mode</Label>
+                <Select value={netMode} onChange={(e) => setNetMode(e.target.value)}>
+                  <option value="dhcp">DHCP (automatique)</option>
+                  <option value="static">IP statique</option>
+                </Select>
+              </div>
+              {netMode === "static" && (
+                <>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <div className="space-y-1">
+                      <Label>Adresse IP (ou CIDR)</Label>
+                      <Input value={netIp} onChange={(e) => setNetIp(e.target.value)} placeholder="192.168.1.50 ou 192.168.1.50/24" />
+                    </div>
+                    <div className="space-y-1">
+                      <Label>Masque (ou préfixe)</Label>
+                      <Input value={netMask} onChange={(e) => setNetMask(e.target.value)} placeholder="255.255.255.0 ou 24" />
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <Label>Passerelle</Label>
+                    <Input value={netGw} onChange={(e) => setNetGw(e.target.value)} placeholder="192.168.1.1" />
+                  </div>
+                </>
+              )}
+              <div className="grid gap-2 sm:grid-cols-2">
+                <div className="space-y-1">
+                  <Label>DNS primaire</Label>
+                  <Input value={netDns1} onChange={(e) => setNetDns1(e.target.value)} placeholder="1.1.1.1" />
+                </div>
+                <div className="space-y-1">
+                  <Label>DNS secondaire</Label>
+                  <Input value={netDns2} onChange={(e) => setNetDns2(e.target.value)} placeholder="8.8.8.8" />
+                </div>
+              </div>
+              <div className="space-y-1">
+                <Label>Nom d&apos;hôte</Label>
+                <Input value={netHostname} onChange={(e) => setNetHostname(e.target.value)} placeholder="elyon-salon" />
+              </div>
+              <Button onClick={saveNetwork} disabled={savingNet}>
+                {savingNet ? "Envoi…" : "Appliquer au Raspberry"}
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
       )}
     </div>
   );

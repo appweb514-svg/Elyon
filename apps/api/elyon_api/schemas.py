@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -209,6 +210,7 @@ class DeviceOut(BaseModel):
     storage_free_bytes: int | None = None
     lan_ip: str | None = None
     wifi_ssid: str | None = None
+    network: dict[str, Any] | None = None
     created_at: dt.datetime
 
     model_config = {"from_attributes": True}
@@ -218,6 +220,7 @@ class DevicePatch(BaseModel):
     name: str | None = None
     site_id: str | None = None
     is_preview: bool | None = None
+    screen_id: str | None = None
 
 
 class MediaRename(BaseModel):

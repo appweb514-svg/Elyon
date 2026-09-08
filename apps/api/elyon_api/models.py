@@ -97,6 +97,7 @@ class CommandType(enum.StrEnum):
     CAPTURE = "capture"
     SHOW = "show"
     STOP_SHOW = "stop_show"
+    NETWORK = "network"
 
 
 class EventLevel(enum.StrEnum):
@@ -211,6 +212,8 @@ class Device(Base):
     current_media_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # File de diffusion : JSON [{media_id, position}], position courante en tête.
     queue_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Configuration réseau cible (appliquée par l'agent via commande NETWORK).
+    network_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_preview: Mapped[bool] = mapped_column(Boolean, default=False)
     # Télémétrie rapportée par le player (heartbeat).
     uptime_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -224,6 +227,18 @@ class Device(Base):
 
     site: Mapped[Site | None] = relationship(back_populates="devices")
     screen: Mapped[Screen | None] = relationship(back_populates="device")
+
+    @property
+    def network(self) -> dict | None:
+        import json as _json
+
+        if not self.network_json:
+            return None
+        try:
+            data = _json.loads(self.network_json)
+        except (ValueError, TypeError):
+            return None
+        return data if isinstance(data, dict) else None
 
 
 class DeviceGroup(Base):
