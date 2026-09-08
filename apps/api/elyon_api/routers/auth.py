@@ -23,9 +23,15 @@ _login_bucket: dict[str, list[float]] = {}
 
 
 def _rate_limited(ip: str, settings) -> None:
+    """Comptabilise la tentative en cours puis refuse au-delà du quota.
+
+    Chaque appel enregistre un horodatage (échec comme succès) : sans
+    append, le seau reste vide et la limite est inopérante (brute-force).
+    """
     now = time.time()
     window = 60
     entries = [t for t in _login_bucket.get(ip, []) if now - t < window]
+    entries.append(now)
     _login_bucket[ip] = entries
     if len(entries) >= settings.max_login_attempts_per_minute:
         raise HTTPException(status_code=429, detail="Trop de tentatives, réessayez plus tard")
