@@ -61,7 +61,7 @@ services:
     expose:
       - "3000"
     environment:
-      NEXT_PUBLIC_API_URL: http://elyon-api.int.labvirtuel.fr
+      ELYON_API_URL: http://api:8000
     networks: [default, dokploy-network]
     labels:
       - traefik.enable=true
