@@ -77,9 +77,13 @@ def require_permission(perm: Permission):  # type: ignore[no-untyped-def]
 
 def get_device_from_request(request: Request, db: Session = Depends(get_db)) -> Device:
     auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
+    # Fallback query param (?token=…) : les <img>/<video> kiosques ne peuvent
+    # pas envoyer d'en-tête Authorization.
+    token = request.query_params.get("token") or ""
+    if auth.startswith("Bearer "):
+        token = auth.removeprefix("Bearer ").strip()
+    if not token:
         raise HTTPException(status_code=401, detail="Token device manquant")
-    token = auth.removeprefix("Bearer ").strip()
     device = db.scalar(
         select(Device).where(
             Device.auth_token_hash == hash_token(token),

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { publicOrigin } from "@/lib/public-origin";
 
-const PUBLIC_PATHS = ["/login"];
+const PUBLIC_PATHS = ["/login", "/player"];
 
 function originOf(request: NextRequest): string {
   return publicOrigin({
