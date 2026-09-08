@@ -200,7 +200,6 @@ def _get_device(db: Session, user: User, device_id: str) -> Device:
     return device
 
 
-@router.post("/{media_id}/show", status_code=201)
 def _can_show_cross_org(db: Session, user: User, media: Media, device: Device) -> bool:
     """Autorise une diffusion inter-organisation quand l'utilisateur y a droit.
 
@@ -218,6 +217,7 @@ def _can_show_cross_org(db: Session, user: User, media: Media, device: Device) -
     )
 
 
+@router.post("/{media_id}/show", status_code=201)
 def show_media(
     media_id: str,
     body: MediaShowRequest,
