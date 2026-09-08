@@ -21,6 +21,12 @@ services:
       timeout: 5s
       retries: 10
 
+  lab-init:
+    image: busybox:stable
+    command: sh -c "chown -R 10001:10001 /lab-enroll"
+    volumes:
+      - ./lab-enroll:/lab-enroll
+
   api:
     build: ./apps/api
     environment:
@@ -42,6 +48,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      lab-init:
+        condition: service_completed_successfully
     expose:
       - "8000"
     networks: [default, dokploy-network]
