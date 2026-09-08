@@ -587,6 +587,11 @@ def media_preview_file(
         pages = json.loads(media.pages_json)
         if pages:
             return _serve_file(storage, pages[0], "image/png", 0, request)
+    if media.kind == MediaKind.VIDEO and media.pages_json:
+        # Vignette générée au traitement (frame ~3 s) : légère, immédiate.
+        pages = json.loads(media.pages_json)
+        if len(pages) > 1:
+            return _serve_file(storage, pages[1], "image/jpeg", 0, request)
     return _serve_file(storage, media.storage_path, mime, media.size_bytes, request)
 
 

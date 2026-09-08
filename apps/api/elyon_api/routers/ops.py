@@ -111,6 +111,8 @@ def heartbeat(
     device.lan_ip = body.lan_ip
     device.wifi_ssid = body.wifi_ssid
     db.commit()
+    _queue_advance_if_needed(db, device)
+    db.commit()
     if first_seen:
         _add_event(db, device.org_id, device.site_id, device.id, "device_online",
                    EventLevel.INFO, f"Appareil {device.name} connecté")
@@ -1058,6 +1060,76 @@ _player_frame_cache: dict[str, tuple[bytes | None, float]] = {}
 # device_id → (media_id, monotonic_start) : position de lecture estimée pour
 # le rendu vidéo côté serveur (fallback sans capture du player).
 _video_start: dict[str, tuple[str, float]] = {}
+
+# device_id → (media_id, monotonic_start, seuil_secondes) : auto-enchaînement
+# de la file de diffusion (le média suivant démarre en fin de lecture).
+_queue_cursor: dict[str, tuple[str, float, float | None]] = {}
+
+
+def _queue_advance_if_needed(db: Session, device: Device) -> None:
+    """Enchaîne automatiquement sur le média suivant de la file.
+
+    Appelé à chaque heartbeat : si le média de tête est joué depuis plus
+    longtemps que son seuil (vidéo : durée réelle ; image : 10 s par défaut),
+    le média suivant de la file passe en SHOW.
+    """
+    if device.player_state != "playing" or not device.current_media_id:
+        return
+    items = _device_queue_items(device)
+    if len(items) < 2 or items[0]["media_id"] != device.current_media_id:
+        return
+    now = time.monotonic()
+    cursor = _queue_cursor.get(device.id)
+    if cursor is None or cursor[0] != device.current_media_id:
+        # Nouvelle lecture : calculer le seuil de durée.
+        threshold: float | None = 10.0  # image sans durée explicite
+        media = db.get(Media, device.current_media_id)
+        if media is not None and media.kind == MediaKind.VIDEO:
+            settings = None  # durée via cache ffprobe ; abs du stockage local
+            try:
+                from elyon_api.config import Settings as _S
+                from elyon_api.services.storage import LocalStorage as _LS
+                storage = _LS(_S().media_storage_root)
+                to_abs = getattr(storage, "_abs", None)
+                if to_abs is not None:
+                    threshold = _video_duration(to_abs(media.storage_path))
+            except Exception:  # noqa: BLE001
+                threshold = None
+            if threshold is None:
+                threshold = 30.0
+        _queue_cursor[device.id] = (device.current_media_id, now, threshold)
+        return
+    _, started, threshold = cursor
+    if threshold is None or now - started < threshold:
+        return
+    # Fin de lecture : rotation de la file + SHOW du suivant.
+    next_id = items[1]["media_id"]
+    media = db.get(Media, next_id)
+    if media is None:
+        return
+    items = items[1:] + [items[0]]
+    device.queue_json = json.dumps(items)
+    for stale in db.scalars(
+        select(Command).where(
+            Command.device_id == device.id,
+            Command.type == CommandType.SHOW,
+            Command.status == CommandStatus.PENDING,
+        )
+    ):
+        stale.status = CommandStatus.FAILED
+        stale.error = "Remplacé (auto-enchaînement)"
+    cmd = Command(
+        device_id=device.id,
+        type=CommandType.SHOW,
+        payload=json.dumps(
+            {"media_id": media.id, "name": media.name, "kind": media.kind.value}
+        ),
+    )
+    db.add(cmd)
+    device.current_media_id = media.id
+    device.player_state = "playing"
+    _queue_cursor[device.id] = (media.id, now, 10.0)
+    audit(db, "device.queue_auto_next", "device", device.id, detail=media.name)
 
 
 def _placeholder_png_bytes(text: str) -> bytes:

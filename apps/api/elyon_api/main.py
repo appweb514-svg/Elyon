@@ -77,7 +77,14 @@ def create_app(app_settings: Settings | None = None, run_migrations: bool = True
             migrate(app_settings)
         yield
 
-    application = FastAPI(title="Elyon API", lifespan=_lifespan)
+    application = FastAPI(
+        title="Elyon API",
+        description="API du CMS d'affichage dynamique Elyon : appareils, médias, "
+        "plannings, playlists, widgets, file de diffusion. Docs interactives "
+        "sur /docs (OpenAPI 3.1 sur /openapi.json).",
+        version="1.0.0",
+        lifespan=_lifespan,
+    )
     application.state.settings = app_settings
     application.state.session_factory = build_session_factory(app_settings)
 

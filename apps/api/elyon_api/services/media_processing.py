@@ -20,6 +20,28 @@ def _thumbnail(image_path: Path, out_path: Path, width: int = 320) -> None:
         img.convert("RGB").save(out_path, "JPEG", quality=80)
 
 
+def _video_thumbnail(video_path: Path, out_path: Path, seek: float = 3.0) -> bool:
+    """Vignette JPEG d'une vidéo via ffmpeg (False si indisponible)."""
+    if shutil.which("ffmpeg") is None:
+        return False
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-v", "error",
+                "-ss", f"{seek:.2f}", "-i", str(video_path),
+                "-frames:v", "1", "-vf", "scale=640:-2",
+                str(out_path),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        return out_path.exists()
+    except (subprocess.SubprocessError, OSError):
+        return False
+
+
 def _pdf_to_images(pdf_path: Path, out_dir: Path) -> list[str]:
     if shutil.which("pdftoppm") is None:
         raise RuntimeError("pdftoppm indisponible (poppler-utils requis)")
