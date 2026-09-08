@@ -211,6 +211,13 @@ def show_media(
     """
     media = _get_media(db, user, media_id)
     device = _get_device(db, user, body.device_id)
+    if media.org_id != device.org_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Média hors organisation de l'appareil — déplacez le média dans "
+            "l'organisation de l'appareil ou choisissez un appareil de "
+            "l'organisation du média",
+        )
     if device.status != DeviceStatus.APPROVED:
         raise HTTPException(
             status_code=409,
