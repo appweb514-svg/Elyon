@@ -231,6 +231,50 @@ def _issue_show(db: Session, device: Device, media: Media, user: User) -> Comman
     return cmd
 
 
+@router.get("/devices/{device_id}/widgets-feed")
+def device_widgets_feed(
+    device_id: str,
+    device: Device = Depends(get_device_from_request),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Données de widgets résolues pour le player web (auth device).
+
+    Retourne les textes prêts à l'affichage : ticker (RSS résolu ou texte
+    déroulant), météo du bandeau. Cache serveur 5 min par widget.
+    """
+    if device.id != device_id:
+        raise HTTPException(status_code=403, detail="Device mismatch")
+    out: dict[str, Any] = {"ticker_text": None, "ticker_speed": None, "weather_text": None}
+    screen = device.screen
+    widgets: list[dict[str, Any]] = []
+    if screen is not None and screen.widgets_json:
+        try:
+            loaded = json.loads(screen.widgets_json)
+            if isinstance(loaded, list):
+                widgets = [w for w in loaded if isinstance(w, dict) and w.get("visible", True)]
+        except (ValueError, TypeError):
+            widgets = []
+    for widget in widgets:
+        kind = str(widget.get("type") or "")
+        position = str(widget.get("position") or "")
+        params = widget.get("params") or {}
+        if position == "bottom-ticker" and kind in ("ticker", "text", "rss") and not out["ticker_text"]:
+            if kind in ("ticker", "text"):
+                out["ticker_text"] = str(params.get("text") or "") or None
+                out["ticker_speed"] = str(params.get("speed") or "normal")
+            elif kind == "rss":
+                entry = _widget_feed_entry("rss", params) or {}
+                items = [str(i) for i in (entry.get("items") or []) if str(i).strip()]
+                if items:
+                    out["ticker_text"] = "  •  ".join(items[:5])
+        elif position == "top-band" and kind == "weather" and not out["weather_text"]:
+            city = str(params.get("city") or "").strip() or "Météo"
+            entry = _widget_feed_entry("weather", params) or {}
+            temp = entry.get("temperature")
+            out["weather_text"] = f"{city} · {temp:.0f}°C" if isinstance(temp, (int, float)) else city
+    return out
+
+
 @router.get("/devices/{device_id}/queue")
 def get_device_queue(
     device_id: str,
@@ -1473,6 +1517,11 @@ def _screen_ticker(device: Device) -> tuple[str | None, str | None]:
                 return text, str(params.get("speed") or "normal")
             if kind == "text" and text:
                 return text, None
+            if kind == "rss":
+                entry = _widget_feed_entry("rss", params) or {}
+                items = [str(i) for i in (entry.get("items") or []) if str(i).strip()]
+                if items:
+                    return "  •  ".join(items[:5]), None
     return None, None
 
 

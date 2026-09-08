@@ -30,6 +30,7 @@ type Manifest = {
 };
 
 type QueueItem = { media_id: string; kind: string; name: string; duration: number | null };
+type WidgetFeed = { ticker_text: string | null; ticker_speed: string | null; weather_text: string | null };
 
 function load(): Stored | null {
   try {
@@ -53,6 +54,7 @@ export default function PlayerPage() {
   const [pendingApproval, setPendingApproval] = useState(false);
   const [manifest, setManifest] = useState<Manifest | null>(null);
   const [status, setStatus] = useState<string>("initialisation…");
+  const [feed, setFeed] = useState<WidgetFeed | null>(null);
 
   const tokenRef = useRef<Stored | null>(null);
 
@@ -124,6 +126,20 @@ export default function PlayerPage() {
         }
       };
 
+      // Feed widgets (RSS résolu + météo) toutes les 5 min.
+      const fetchFeed = async () => {
+        try {
+          const res = await fetch(`/api/devices/${s.device_id}/widgets-feed`, {
+            headers: { Authorization: `Bearer ${s.token}` },
+          });
+          if (res.ok) setFeed((await res.json()) as WidgetFeed);
+        } catch {
+          /* feed indisponible : on garde le précédent */
+        }
+      };
+      void fetchFeed();
+      const feedTimer = setInterval(fetchFeed, 5 * 60 * 1000);
+
       // Boucle : manifeste → lecture → heartbeat. Simple et robuste.
       const loop = async () => {
         for (;;) {
@@ -167,6 +183,7 @@ export default function PlayerPage() {
       void loop();
       return () => {
         alive = false;
+        clearInterval(feedTimer);
       };
     },
     [],
@@ -187,11 +204,15 @@ export default function PlayerPage() {
   const ticker = widgets.find((w) => w.position === "bottom-ticker");
   const center = widgets.find((w) => w.position === "center");
   const clock = widgets.find((w) => w.position === "top-right");
+  const idleTicker =
+    ticker && String(ticker.type) === "rss" ? feed?.ticker_text ?? "" : tickerText(ticker);
 
   return (
     <div className="fixed inset-0 bg-black text-white" style={{ overflow: "hidden" }}>
       {/* Kiosque */}
-      {stored && !pendingApproval && <KioskScreen stored={stored} status={status} widgets={widgets} />}
+      {stored && !pendingApproval && (
+        <KioskScreen stored={stored} status={status} widgets={widgets} feed={feed} />
+      )}
 
       {/* Écran d'attente */}
       {(!stored || pendingApproval) && (
@@ -202,12 +223,12 @@ export default function PlayerPage() {
           <span className="elyon-idle-text text-3xl font-semibold tracking-wide">
             Affichage en préparation
           </span>
-          {tickerText(ticker) && (
+          {idleTicker && (
             <div className="absolute bottom-0 left-0 right-0 overflow-hidden bg-black/70 px-4 py-2 text-base whitespace-nowrap">
               <span
-                className={`elyon-ticker inline-block ${tickerSpeed(ticker) ? `elyon-ticker-${tickerSpeed(ticker)}` : ""}`}
+                className={`elyon-ticker inline-block ${(tickerSpeed(ticker) || feed?.ticker_speed || "normal") !== "normal" ? `elyon-ticker-${tickerSpeed(ticker) || feed?.ticker_speed}` : ""}`}
               >
-                {tickerText(ticker)}
+                {idleTicker}
               </span>
             </div>
           )}
@@ -299,10 +320,12 @@ function KioskScreen({
   stored,
   status,
   widgets,
+  feed,
 }: {
   stored: Stored;
   status: string;
   widgets: Array<Record<string, unknown>>;
+  feed: WidgetFeed | null;
 }) {
   const [clock, setClock] = useState("");
   useEffect(() => {
@@ -322,10 +345,16 @@ function KioskScreen({
   }, [widgets]);
 
   const ticker = widgets.find((x) => x.position === "bottom-ticker");
+  const weather = widgets.find((x) => x.position === "top-band");
   const center = widgets.find((x) => x.position === "center");
   const hasClock = widgets.some((x) => x.position === "top-right");
   const centerText = String(((center?.params ?? {}) as Record<string, unknown>)?.text ?? "");
-  const tickerVal = tickerText(ticker);
+  const tickerVal =
+    ticker && String(ticker.type) === "rss" ? feed?.ticker_text ?? "" : tickerText(ticker);
+  const weatherText = weather
+    ? feed?.weather_text ??
+      `${String(((weather.params ?? {}) as Record<string, unknown>)?.city ?? "Météo")}`
+    : null;
 
   return (
     <div className="absolute inset-0" id="kiosk-root-wrap">
@@ -335,6 +364,11 @@ function KioskScreen({
           <span className="elyon-idle-orb left-[8%] top-[15%] h-40 w-40 bg-sky-500" />
           <span className="elyon-idle-orb right-[10%] top-[55%] h-56 w-56 bg-indigo-500" style={{ animationDelay: "3s" }} />
           <span className="elyon-idle-text text-3xl font-semibold tracking-wide">Affichage en préparation</span>
+        </div>
+      )}
+      {weatherText && (
+        <div className="absolute left-0 right-0 top-0 z-10 rounded-b-lg bg-black/60 px-4 py-2 text-center text-2xl font-medium">
+          {weatherText}
         </div>
       )}
       {hasClock && clock && (

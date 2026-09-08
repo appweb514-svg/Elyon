@@ -226,6 +226,21 @@ def _draw_icon(draw: Any, cx: float, cy: float, r: float, kind: str) -> None:
         draw.polygon(pts, fill=bolt)
 
 
+def load_display_font(size: int):
+    """Police d'affichage : DejaVu (accents) si présente, sinon la police PIL."""
+    from PIL import ImageFont
+
+    try:
+        return ImageFont.truetype(
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", size=size
+        )
+    except (OSError, ImportError):
+        try:
+            return ImageFont.load_default(size=size)
+        except TypeError:
+            return ImageFont.load_default()
+
+
 def compose_widget_bar(
     image_path: Path,
     widgets: list[dict[str, Any]],
@@ -251,20 +266,6 @@ def compose_widget_bar(
     width, height = base.size
     overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
-def load_display_font(size: int):
-    """Police d'affichage : DejaVu (accents) si présente, sinon la police PIL."""
-    from PIL import ImageFont
-
-    try:
-        return ImageFont.truetype(
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", size=size
-        )
-    except (OSError, ImportError):
-        try:
-            return ImageFont.load_default(size=size)
-        except TypeError:
-            return ImageFont.load_default()
-
     base_size = max(12, height // 30)
     pad_x = max(6, width // 150)
     pad_y = max(4, height // 90)
