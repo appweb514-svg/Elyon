@@ -679,42 +679,48 @@ async def _video_mjpeg_parts(path: str, start_seek: float):
     duration = await loop.run_in_executor(None, _video_duration, Path(path))
     seek = max(0.0, float(start_seek))
     if duration and duration > 1:
-        # Borné à la fin du fichier : l'aperçu suit la lecture réelle.
-        seek = min(seek, duration - 0.5)
-    proc = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-hide_banner", "-loglevel", "error",
-        "-re", "-ss", f"{seek:.3f}", "-i", path,
-        "-an",
-        "-vf", "fps=15,scale='min(640,iw)':-2",
-        "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "5",
-        "pipe:1",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-    buf = b""
-    try:
-        assert proc.stdout is not None
-        while True:
-            chunk = await proc.stdout.read(65536)
-            if not chunk:
-                break
-            buf += chunk
+        # Position modulo la durée : l'aperçu boucle comme la lecture réelle.
+        seek = seek % max(duration - 0.5, 0.5)
+    while True:
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-re", "-ss", f"{seek:.3f}", "-i", path,
+            "-an",
+            "-vf", "fps=15,scale=min(640\\,iw):-2",
+            "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "5",
+            "pipe:1",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        seek = 0.0  # les tours suivants repartent du début (boucle)
+        buf = b""
+        try:
+            assert proc.stdout is not None
             while True:
-                soi = buf.find(b"\xff\xd8")
-                if soi == -1:
-                    buf = b""
+                chunk = await proc.stdout.read(65536)
+                if not chunk:
                     break
-                eoi = buf.find(b"\xff\xd9", soi + 2)
-                if eoi == -1:
-                    if soi > 0:
-                        buf = buf[soi:]
-                    break
-                yield buf[soi : eoi + 2]
-                buf = buf[eoi + 2 :]
-    finally:
-        if proc.returncode is None:
-            proc.kill()
-            await proc.wait()
+                buf += chunk
+                while True:
+                    soi = buf.find(b"\xff\xd8")
+                    if soi == -1:
+                        buf = b""
+                        break
+                    eoi = buf.find(b"\xff\xd9", soi + 2)
+                    if eoi == -1:
+                        if soi > 0:
+                            buf = buf[soi:]
+                        break
+                    yield buf[soi : eoi + 2]
+                    buf = buf[eoi + 2 :]
+        finally:
+            proc.terminate()
+            try:
+                await proc.wait()
+            except Exception:  # noqa: BLE001
+                pass
+        # Fin du fichier : on boucle immédiatement sur la vidéo.
+        await asyncio.sleep(0.1)
 
 
 def _render_live_frame(db_factory, settings, device_id: str) -> bytes | None:
