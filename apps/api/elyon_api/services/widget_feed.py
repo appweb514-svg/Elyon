@@ -68,9 +68,11 @@ def fetch_weather(
         if place:
             data["place"] = place
         return data
+    # NB : `daily=time` est désormais refusé par open-meteo (400) ; les
+    # dates sont renvoyées automatiquement dans daily.time.
     weather_url = (
         "https://api.open-meteo.com/v1/forecast?current=temperature_2m,"
-        "weather_code,wind_speed_10m&daily=time,temperature_2m_max,"
+        "weather_code,wind_speed_10m&daily=temperature_2m_max,"
         "temperature_2m_min,weather_code&timezone=auto&forecast_days=5&"
         + urllib.parse.urlencode({"latitude": lat, "longitude": lon})
     )
