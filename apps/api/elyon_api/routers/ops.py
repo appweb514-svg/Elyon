@@ -1212,7 +1212,7 @@ def _compose_widget_bar_server(img: "Image.Image", widgets: list[dict[str, Any]]
     Version légère du rendu du player : météo, horloge, texte, ticker
     défilant (animé d'une frame à l'autre via l'horodatage).
     """
-    from PIL import ImageDraw, ImageFont
+    from PIL import Image, ImageDraw, ImageFont
 
     if not widgets:
         return img

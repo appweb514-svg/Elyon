@@ -96,6 +96,24 @@ def install(
         codes[serial] = code
     db.commit()
     written = _write_code_files(settings, codes)
+    # Écrans par défaut pour les players lab enrôlés sans écran :
+    # sans écran, pas de layout → les widgets ne peuvent jamais s'afficher.
+    from elyon_api.models import Device as _Device
+
+    for device in db.scalars(
+        select(_Device).where(_Device.serial.in_(serials))
+    ):
+        if device.screen_id is None:
+            db.add(
+                Screen(
+                    name=f"Écran {device.name}",
+                    site_id=site.id,
+                    width=1920,
+                    height=1080,
+                    orientation="landscape",
+                    device_id=device.id,
+                )
+            )
     audit(db, "lab.install", "site", site.id, user=user, detail=",".join(serials))
     db.commit()
     return {
