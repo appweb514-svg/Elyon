@@ -1358,6 +1358,7 @@ def admin_wall(
     for device in db.scalars(stmt):
         media = db.get(Media, device.current_media_id) if device.current_media_id else None
         site = device.site
+        screen = device.screen
         items.append(
             {
                 "device_id": device.id,
@@ -1375,6 +1376,11 @@ def admin_wall(
                 "current_media_url": (
                     media.storage_path if media and media.kind == MediaKind.WEB else None
                 ),
+                # Dimensions de l'écran : le cadre d'aperçu suit le format réel
+                # (portrait, 4:3, ultra-large…) au lieu d'un 16:9 figé.
+                "screen_width": screen.width if screen else None,
+                "screen_height": screen.height if screen else None,
+                "screen_orientation": screen.orientation if screen else None,
                 "last_seen_at": device.last_seen_at.isoformat() if device.last_seen_at else None,
                 "screen_id": device.screen.id if device.screen else None,
                 **dict(

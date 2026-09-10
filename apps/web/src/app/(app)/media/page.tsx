@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, Download, Eye, FolderInput, Globe, ListPlus, Pencil, Share2, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, Eye, FolderInput, Globe, ListPlus, Pencil, Play, Share2, Trash2 } from "lucide-react";
 
 import { api, formatBytes, formatDate } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
@@ -278,6 +278,14 @@ export default function MediaPage() {
     return `/api/media/${media.id}/preview-file`;
   }
 
+  function thumbnailUrl(media: Media): string {
+    // Vidéo : vignette légère (le preview-file sert la vidéo jouable).
+    if (media.kind === "video") {
+      return `/api/media/${media.id}/thumbnail-file`;
+    }
+    return previewUrl(media);
+  }
+
   async function confirmShow() {
     if (!showMedia) return;
     setShowSending(true);
@@ -524,23 +532,21 @@ export default function MediaPage() {
                         {media.url}
                       </span>
                     </span>
-                  ) : media.kind === "video" ? (
-                    <video
-                      className="max-h-28"
-                      src={`/api/media/${media.id}/preview-file`}
-                      playsInline
-                      muted
-                      loop
-                      autoPlay
-                      preload="metadata"
-                    />
                   ) : (
-                    /* eslint-disable-next-line @next/next/no-img-element */
-                    <img
-                      className="max-h-32 object-contain"
-                      src={previewUrl(media)}
-                      alt={media.name}
-                    />
+                    <span className="relative flex h-full w-full items-center justify-center">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        className="max-h-32 object-contain"
+                        src={thumbnailUrl(media)}
+                        alt={media.name}
+                        loading="lazy"
+                      />
+                      {media.kind === "video" && (
+                        <span className="absolute flex h-9 w-9 items-center justify-center rounded-full bg-black/60 text-white">
+                          <Play className="h-4 w-4" />
+                        </span>
+                      )}
+                    </span>
                   )}
                 </button>
                 <CardContent className="space-y-1 p-3">

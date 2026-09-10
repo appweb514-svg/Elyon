@@ -67,6 +67,7 @@ Voir `docs/rbac.md` pour le mapping rôle → permissions.
 | GET | `/media?limit=&offset=` · `/media/{id}` | `media.view` | Liste paginable (`X-Total-Count`), détail (kind, sha256, dimensions…). Fichiers servis en streaming (Range supporté) |
 | POST | `/media/{id}/show` | `device.command` | Afficher immédiatement sur un Raspberry (`{device_id, duration_seconds?}`) |
 | POST | `/media/{id}/playlists/{playlist_id}` | `playlist.edit` | Ajouter le média en fin de playliste |
+| GET | `/media/{id}/thumbnail-file` | `media.view` | Vignette légère (frame vidéo, 1re page PDF/Office) pour les cartes |
 | GET | `/media/{id}/file` | Bearer device | Fichier original en streaming (Range supporté) |
 | GET | `/media/{id}/device-file` | Bearer device | Fichier pour téléchargement direct d'un Raspberry (commande Afficher) |
 | GET | `/media/{id}/pages/{index}/file` | Bearer device | Page PNG d'un PDF converti |

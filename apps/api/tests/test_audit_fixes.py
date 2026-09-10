@@ -312,6 +312,7 @@ def _approved_device(client: TestClient, serial: str) -> dict:
         json={"serial": serial, "name": "Dev", "site_code": token["code"]},
     ).json()
     auth_json(client, "POST", f"/api/devices/{device['device_id']}/approve")
+    device["site_id"] = site["id"]
     return device
 
 
@@ -552,3 +553,51 @@ def test_wall_exposes_current_web_url(client: TestClient):
     frame = next(item for item in wall if item["device_id"] == device["device_id"])
     assert frame["current_media_kind"] == "web"
     assert frame["current_media_url"] == "https://elyon.int.labvirtuel.fr/media"
+
+
+def test_wall_exposes_screen_dimensions(client: TestClient):
+    """Le cadre d'aperçu doit pouvoir suivre un écran portrait/4:3."""
+    _org_setup(client)
+    device = _approved_device(client, "SER-DIMS-1")
+    screen = auth_json(
+        client,
+        "POST",
+        f"/api/sites/{device['site_id']}/screens",
+        json={
+            "name": "Ecran Portrait",
+            "device_id": device["device_id"],
+            "width": 1080,
+            "height": 1920,
+            "orientation": "portrait",
+        },
+    )
+    assert screen.status_code == 201, screen.text
+    wall = client.get("/api/admin/wall").json()
+    frame = next(item for item in wall if item["device_id"] == device["device_id"])
+    assert frame["screen_width"] == 1080
+    assert frame["screen_height"] == 1920
+    assert frame["screen_orientation"] == "portrait"
+
+
+def test_video_preview_serves_original_and_thumbnail(client: TestClient):
+    """La prévisualisation vidéo doit servir la vidéo, pas la vignette."""
+    _org_setup(client)
+    content = b"0123456789abcdef"
+    created = auth_json(
+        client,
+        "POST",
+        "/api/media",
+        files={"file": ("clip.mp4", content, "video/mp4")},
+    )
+    assert created.status_code == 201, created.text
+    media_id = created.json()["id"]
+
+    preview = client.get(
+        f"/api/media/{media_id}/preview-file", headers={"Range": "bytes=2-5"}
+    )
+    assert preview.status_code == 206
+    assert preview.content == b"2345"
+    assert preview.headers["content-type"].startswith("video/mp4")
+
+    thumbnail = client.get(f"/api/media/{media_id}/thumbnail-file")
+    assert thumbnail.status_code == 200

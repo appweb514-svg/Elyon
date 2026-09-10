@@ -10,15 +10,21 @@ export function TvFrame({
   children,
   className,
   label,
+  ratio,
 }: {
   children: React.ReactNode;
   className?: string;
   label?: string;
+  /** Format d'écran réel, ex. "9 / 16" pour un portrait (défaut 16:9). */
+  ratio?: string;
 }) {
   return (
     <div className={cn("mx-auto w-full max-w-2xl", className)}>
       <div className="rounded-[1.25rem] border-4 border-slate-800 bg-slate-900 p-2 shadow-2xl shadow-slate-950/40 ring-1 ring-slate-700/60">
-        <div className="relative aspect-video w-full overflow-hidden rounded-[0.75rem] bg-black">
+        <div
+          className="relative w-full overflow-hidden rounded-[0.75rem] bg-black"
+          style={{ aspectRatio: ratio ?? "16 / 9" }}
+        >
           {children}
         </div>
         <div className="mt-1.5 flex items-center justify-between px-2">

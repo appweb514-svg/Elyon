@@ -670,12 +670,36 @@ def media_preview_file(
         pages = json.loads(media.pages_json)
         if pages:
             return _serve_file(storage, pages[0], "image/png", 0, request)
+    if media.kind == MediaKind.VIDEO:
+        # La vidéo d'origine (Range supporté) : c'était la vignette JPEG qui
+        # était servie ici, d'où une lecture <video> impossible.
+        return _serve_file(storage, media.storage_path, mime, media.size_bytes, request)
+    return _serve_file(storage, media.storage_path, mime, media.size_bytes, request)
+
+
+@router.get("/{media_id}/thumbnail-file")
+def media_thumbnail_file(
+    media_id: str,
+    request: Request,
+    user: User = Depends(require_permission(Permission.MEDIA_VIEW)),
+    db: Session = Depends(get_db),
+):
+    """Vignette d'un média (session back-office) : image légère pour les cartes.
+
+    Vidéos : frame générée au traitement. PDF/Office : première page.
+    Autres : fichier d'origine.
+    """
+    media = _get_media(db, user, media_id)
+    storage = build_storage(request.app.state.settings)
     if media.kind == MediaKind.VIDEO and media.pages_json:
-        # Vignette générée au traitement (frame ~3 s) : légère, immédiate.
         pages = json.loads(media.pages_json)
         if len(pages) > 1:
             return _serve_file(storage, pages[1], "image/jpeg", 0, request)
-    return _serve_file(storage, media.storage_path, mime, media.size_bytes, request)
+    if media.kind in (MediaKind.PDF, MediaKind.OFFICE) and media.pages_json:
+        pages = json.loads(media.pages_json)
+        if pages:
+            return _serve_file(storage, pages[0], "image/png", 0, request)
+    return _serve_file(storage, media.storage_path, media.mime_type, media.size_bytes, request)
 
 
 @router.get("/{media_id}/download")

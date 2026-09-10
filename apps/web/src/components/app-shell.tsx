@@ -14,10 +14,10 @@ import {
   Menu,
   MonitorSmartphone,
   ScrollText,
-  Tv,
   Users,
   UsersRound,
   Layers,
+  LayoutGrid,
   Cpu,
   X,
 } from "lucide-react";
@@ -30,7 +30,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 
 const NAV = [
   { href: "/", label: "Tableau de bord", icon: LayoutDashboard, perm: null },
-  { href: "/wall", label: "Mur d'écrans", icon: Tv, perm: "device.view" as const },
+  { href: "/wall", label: "Mur d'écrans", icon: LayoutGrid, perm: "device.view" as const },
   { href: "/devices", label: "Appareils", icon: MonitorSmartphone, perm: "device.view" as const },
   { href: "/groups", label: "Groupes", icon: Layers, perm: "device.view" as const },
   { href: "/media", label: "Médias", icon: FileVideo, perm: "media.view" as const },

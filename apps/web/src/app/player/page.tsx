@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 
 /**
  * Player web universel : fonctionne sur tout appareil doté d'un navigateur
@@ -307,23 +307,35 @@ export default function PlayerPage() {
           <span className="elyon-idle-orb right-[10%] top-[55%] h-56 w-56 bg-indigo-500" style={{ animationDelay: "3s" }} />
           <span className="elyon-idle-orb bottom-[10%] left-[45%] h-32 w-32 bg-cyan-400" style={{ animationDelay: "6s" }} />
           {idleWeatherText && (
-            <div className="absolute left-0 right-0 top-0 z-10 rounded-b-lg bg-black/60 px-4 py-2 text-center text-xl font-medium">
+            <div
+              className="absolute left-0 right-0 top-0 z-10 rounded-b-lg bg-black/60 text-center font-medium"
+              style={{ ...widgetFont(idleWeather, 14, 160), padding: "1vh 1.5vw" }}
+            >
               {idleWeatherText}
               {feed?.weather_days && (
-                <span className="block text-sm text-slate-300">{feed.weather_days}</span>
+                <span className="block text-slate-300" style={{ fontSize: "0.58em" }}>
+                  {feed.weather_days}
+                </span>
               )}
             </div>
           )}
           <ClockWidget
             widget={idleClock}
             siteTimezone={siteTimezone}
-            className="absolute right-6 top-16 z-10 rounded-lg bg-black/60 px-4 py-2 text-3xl font-semibold"
+            className="absolute right-[1.5vw] top-[9vh] z-10 rounded-lg bg-black/60 font-semibold"
+            style={{ ...widgetFont(idleClock, 16, 180), padding: "1vh 1.2vw" }}
           />
-          <span className="elyon-idle-text text-3xl font-semibold tracking-wide">
+          <span
+            className="elyon-idle-text font-semibold tracking-wide"
+            style={{ fontSize: "clamp(1.2rem, 4vh, 4rem)" }}
+          >
             Affichage en préparation
           </span>
           {idleTicker && (
-            <div className="absolute bottom-0 left-0 right-0 overflow-hidden bg-black/70 px-4 py-2 text-base whitespace-nowrap">
+            <div
+              className="absolute bottom-0 left-0 right-0 overflow-hidden bg-black/70 whitespace-nowrap"
+              style={{ ...widgetFont(ticker, 12, 140), padding: "1vh 1.5vw" }}
+            >
               <span
                 className={`elyon-ticker inline-block ${(tickerSpeed(ticker) || feed?.ticker_speed || "normal") !== "normal" ? `elyon-ticker-${tickerSpeed(ticker) || feed?.ticker_speed}` : ""}`}
               >
@@ -410,6 +422,25 @@ async function playWeb(target: string, seconds: number, alive: () => boolean): P
     }
     setTimeout(resolve, Math.max(1, seconds) * 1000);
   });
+}
+
+/** Facteur de taille (identique au player Python : petit/moyen/grand). */
+function widgetScale(widget: Record<string, unknown> | undefined): number {
+  const params = (widget?.params ?? {}) as Record<string, unknown>;
+  const size = String(params.size ?? "medium");
+  if (size === "small") return 1;
+  if (size === "large") return 2.2;
+  return 1.5;
+}
+
+/** Taille de police fluide : proportionnelle à la hauteur de l'écran. */
+function widgetFont(
+  widget: Record<string, unknown> | undefined,
+  min: number,
+  max: number
+): CSSProperties {
+  const vh = ((100 / 30) * widgetScale(widget)).toFixed(2);
+  return { fontSize: `clamp(${min}px, ${vh}vh, ${max}px)` };
 }
 
 function tickerText(w: Record<string, unknown> | undefined): string {
@@ -500,10 +531,12 @@ function ClockWidget({
   widget,
   siteTimezone,
   className,
+  style,
 }: {
   widget: Record<string, unknown> | undefined;
   siteTimezone: string | null;
   className: string;
+  style?: CSSProperties;
 }) {
   const [clock, setClock] = useState("");
   const format = String(((widget?.params ?? {}) as Record<string, unknown>)?.format ?? "HH:MM");
@@ -519,7 +552,11 @@ function ClockWidget({
     return () => clearInterval(timer);
   }, [widget, format, tzMode, siteTimezone]);
   if (!widget || !clock) return null;
-  return <div className={className}>{clock}</div>;
+  return (
+    <div className={className} style={style}>
+      {clock}
+    </div>
+  );
 }
 
 function KioskScreen({
@@ -554,31 +591,52 @@ function KioskScreen({
           <span className="elyon-idle-orb left-[8%] top-[15%] h-40 w-40 bg-sky-500" />
           <span className="elyon-idle-orb right-[10%] top-[55%] h-56 w-56 bg-indigo-500" style={{ animationDelay: "3s" }} />
           <span className="elyon-idle-orb bottom-[10%] left-[45%] h-32 w-32 bg-cyan-400" style={{ animationDelay: "6s" }} />
-          <span className="elyon-idle-text text-3xl font-semibold tracking-wide">Affichage en préparation</span>
+          <span
+            className="elyon-idle-text font-semibold tracking-wide"
+            style={{ fontSize: "clamp(1.2rem, 4vh, 4rem)" }}
+          >
+            Affichage en préparation
+          </span>
         </div>
       )}
       {weatherText && (
-        <div className="absolute left-0 right-0 top-0 z-10 rounded-b-lg bg-black/60 px-4 py-2 text-center text-2xl font-medium">
+        <div
+          className="absolute left-0 right-0 top-0 z-10 rounded-b-lg bg-black/60 text-center font-medium"
+          style={{ ...widgetFont(weather, 14, 160), padding: "1vh 1.5vw" }}
+        >
           {weatherText}
           {feed?.weather_days && (
-            <span className="block text-sm text-slate-300">{feed.weather_days}</span>
+            <span className="block text-slate-300" style={{ fontSize: "0.58em" }}>
+              {feed.weather_days}
+            </span>
           )}
         </div>
       )}
       <ClockWidget
         widget={clockWidget}
         siteTimezone={siteTimezone}
-        className={`absolute right-6 z-10 rounded-lg bg-black/60 px-4 py-2 text-4xl font-semibold ${
-          hasWeatherBand ? "top-20" : "top-4"
+        className={`absolute right-[1.5vw] z-10 rounded-lg bg-black/60 font-semibold ${
+          hasWeatherBand ? "top-[9vh]" : "top-[2vh]"
         }`}
+        style={{ ...widgetFont(clockWidget, 16, 180), padding: "1vh 1.2vw" }}
       />
       {centerText && (
-        <div className="absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 rounded-xl bg-black/70 px-8 py-4 text-3xl font-semibold">
+        <div
+          className="absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 rounded-xl bg-black/70 text-center font-semibold"
+          style={{
+            ...widgetFont(center, 14, 160),
+            padding: "1.5vh 2vw",
+            maxWidth: "92vw",
+          }}
+        >
           {centerText}
         </div>
       )}
       {tickerVal && (
-        <div className="absolute bottom-0 left-0 right-0 z-10 overflow-hidden bg-black/70 px-4 py-2 text-xl whitespace-nowrap">
+        <div
+          className="absolute bottom-0 left-0 right-0 z-10 overflow-hidden bg-black/70 whitespace-nowrap"
+          style={{ ...widgetFont(ticker, 12, 140), padding: "1vh 1.5vw" }}
+        >
           <span className={`elyon-ticker inline-block ${tickerSpeed(ticker) !== "normal" ? `elyon-ticker-${tickerSpeed(ticker)}` : ""}`}>
             {tickerVal}
           </span>

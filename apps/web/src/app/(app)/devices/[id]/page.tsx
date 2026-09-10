@@ -75,6 +75,8 @@ type WallFrame = {
   current_media_name: string | null;
   current_media_kind: string | null;
   current_media_url?: string | null;
+  screen_width?: number | null;
+  screen_height?: number | null;
   ticker_text?: string | null;
   ticker_speed?: string | null;
 };
@@ -261,6 +263,10 @@ export default function DeviceDetailPage() {
   // Le flux MJPEG est reconnecté quand le média affiché change.
   const liveSrc = `/api/admin/wall/${deviceId}/live`;
   const currentMediaKey = wall?.current_media_id ?? "none";
+  const screenRatio =
+    wall?.screen_width && wall?.screen_height
+      ? `${wall.screen_width} / ${wall.screen_height}`
+      : undefined;
   const [liveBust, setLiveBust] = useState(0);
   useEffect(() => {
     liveKey.current += 1;
@@ -793,7 +799,10 @@ export default function DeviceDetailPage() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <TvFrame label={wall?.computed_status === "online" ? "live" : "off"}>
+              <TvFrame
+                label={wall?.computed_status === "online" ? "live" : "off"}
+                ratio={screenRatio}
+              >
                 {/* Flux MJPEG : le navigateur met à jour l'image tout seul,
                     comme un vrai retour vidéo. La clé force la reconnexion
                     quand le média affiché change. */}

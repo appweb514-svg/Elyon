@@ -19,6 +19,8 @@ export type WallFrame = {
   current_media_name: string | null;
   current_media_kind: string | null;
   current_media_url?: string | null;
+  screen_width?: number | null;
+  screen_height?: number | null;
   last_seen_at: string | null;
   screen_id: string | null;
   ticker_text?: string | null;
@@ -75,7 +77,15 @@ function VncWindow({ frame, delay }: { frame: WallFrame; delay?: number }) {
         </span>
       </header>
       <Link href={`/devices/${frame.device_id}`} className="block">
-        <div className="relative aspect-video bg-black">
+        <div
+          className="relative bg-black"
+          style={{
+            aspectRatio:
+              frame.screen_width && frame.screen_height
+                ? `${frame.screen_width} / ${frame.screen_height}`
+                : "16 / 9",
+          }}
+        >
           {online && frame.player_state !== "playing" && frame.player_state !== "blank" ? (
             <div className="elyon-idle absolute inset-0 flex flex-col items-center justify-center gap-3 overflow-hidden">
               <span className="elyon-idle-orb left-[8%] top-[15%] h-24 w-24 bg-sky-500" />

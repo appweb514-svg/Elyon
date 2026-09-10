@@ -440,18 +440,23 @@ def _draw_weather_block(
         cells.append((label, int(bbox[2] - bbox[0]), day.get("code")))
     cell_gap = pad_x
     line2_w = sum(2 * r + gap // 2 + cw for _, cw, _ in cells) + cell_gap * max(0, len(cells) - 1)
-    block_w = max(line1_w, line2_w) + 2 * pad_x
-    if block_w >= width - margin:
+    content_w = max(line1_w, line2_w)
+    block_w = content_w + 2 * pad_x
+    if position != "top-band" and block_w >= width - margin:
         return False
     has_days = bool(cells)
     line2_h = max(2 * r, t1_h) if has_days else 0
     gap_lines = pad_y if has_days else 0
     block_h = 2 * pad_y + t1_h + gap_lines + line2_h
     top = position.startswith("top-")
-    if position in ("bottom-center", "top-center"):
-        bar_x = (width - block_w) // 2
+    if position == "top-band":
+        # Bandeau pleine largeur (comme le serveur et le player web) : le
+        # contenu est centré au lieu d'une boîte collée à gauche.
+        bar_x, block_w = 0, width
+    elif position in ("bottom-center", "top-center"):
+        bar_x = max(margin, (width - block_w) // 2)
     elif position in ("bottom-right", "top-right"):
-        bar_x = width - block_w - margin
+        bar_x = max(margin, width - block_w - margin)
     else:
         bar_x = margin
     bar_y = margin if top else height - block_h - margin
@@ -460,16 +465,18 @@ def _draw_weather_block(
         radius=max(4, block_h // 4),
         fill=(0, 0, 0, 178),
     )
+    content_x = bar_x + max(pad_x, (block_w - content_w) // 2)
+    line1_x = content_x + (content_w - line1_w) // 2
     draw.text(
-        (bar_x + pad_x - bbox1[0], bar_y + pad_y - bbox1[1]),
+        (line1_x - bbox1[0], bar_y + pad_y - bbox1[1]),
         line1,
         font=font,
         fill=(255, 255, 255, 255),
     )
-    icon_cx = bar_x + pad_x + t1_w + gap + r
+    icon_cx = line1_x + t1_w + gap + r
     icon_cy = bar_y + pad_y + t1_h / 2
     _draw_icon(draw, icon_cx, icon_cy, r, weather_icon_kind(entry.get("code")))
-    x = bar_x + pad_x
+    x = content_x + (content_w - line2_w) // 2
     y2_center = bar_y + pad_y + t1_h + gap_lines + line2_h / 2
     for label, cw, code in cells:
         _draw_icon(draw, x + r, y2_center, r, weather_icon_kind(code))
