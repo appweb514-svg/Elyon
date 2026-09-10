@@ -31,6 +31,8 @@ import {
   Copy,
   GripVertical,
   Loader2,
+  Pause,
+  Play,
 } from "lucide-react";
 
 type Device = {
@@ -870,10 +872,12 @@ export default function DeviceDetailPage() {
                       size="sm"
                       variant={isPaused ? "default" : "outline"}
                       onClick={() => void togglePause()}
-                      disabled={!isShowingDirect && !isPaused}
                       title={isPaused ? "Reprendre la diffusion" : "Figer l'image affichée"}
+                      aria-label={isPaused ? "Reprendre la diffusion" : "Mettre l'affichage en pause"}
+                      data-testid="device-pause-toggle"
                     >
-                      {isPaused ? "▶ Reprendre" : "⏸ Pause"}
+                      {isPaused ? <Play /> : <Pause />}
+                      {isPaused ? "Reprendre" : "Pause"}
                     </Button>
                     <Button size="sm" variant="outline" onClick={queueNext} disabled={queue.length < 2}>
                       ⏭ Suivant
