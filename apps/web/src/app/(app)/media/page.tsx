@@ -532,6 +532,12 @@ export default function MediaPage() {
                         {media.url}
                       </span>
                     </span>
+                  ) : media.kind === "video" && !media.pages_count ? (
+                    /* Vidéo pas encore convertie : pas de vignette, on évite
+                       une image cassée (la lecture reste possible via l'aperçu). */
+                    <span className="flex h-full w-full items-center justify-center text-muted-foreground">
+                      <Play className="h-8 w-8" />
+                    </span>
                   ) : (
                     <span className="relative flex h-full w-full items-center justify-center">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
