@@ -368,7 +368,7 @@ export default function DeviceDetailPage() {
   }, [loadQueue]);
 
   useEffect(() => {
-    api.get<Media[]>("/api/media").then(setMediaList).catch(() => undefined);
+    api.get<Media[]>(`/api/media?device_id=${deviceId}`).then(setMediaList).catch(() => undefined);
   }, [deviceId]);
 
   async function queueAdd() {
@@ -513,7 +513,7 @@ export default function DeviceDetailPage() {
     try {
       const [detail, media] = await Promise.all([
         api.get<PlaylistDetail>(`/api/playlists/${s.playlist_id}`),
-        api.get<Media[]>("/api/media"),
+        api.get<Media[]>(`/api/media?device_id=${deviceId}`),
       ]);
       setExpandedPlaylist(detail);
       setMediaList(media as Media[]);

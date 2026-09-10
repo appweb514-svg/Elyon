@@ -19,6 +19,7 @@ from elyon_api.deps import (
     require_permission,
     require_same_org,
     require_site_access,
+    require_site_id_access,
 )
 from elyon_api.models import (
     Command,
@@ -495,6 +496,7 @@ def list_media(
     status: MediaStatus | None = None,
     trash: bool = False,
     origin: str | None = None,
+    device_id: str | None = None,
     limit: int | None = Query(default=None, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     user: User = Depends(require_permission(Permission.MEDIA_VIEW)),
@@ -509,7 +511,19 @@ def list_media(
     donne le total filtré. Sans `limit`, la liste complète est renvoyée
     (compatibilité back-office).
     """
-    scope = *_media_scope(db, user),
+    if device_id:
+        # La file d'un device peut utiliser les médias de son organisation,
+        # même s'ils ont été créés par un autre utilisateur. Sans ce mode,
+        # `/api/media` ne renvoyait que la bibliothèque personnelle et le lien
+        # web ne pouvait pas être sélectionné sur le périphérique.
+        device = db.get(Device, device_id)
+        if device is None:
+            raise HTTPException(status_code=404, detail="Appareil introuvable")
+        require_site_access(db, user, device.org_id)
+        require_site_id_access(user, device.site_id)
+        scope = (Media.org_id == device.org_id,)
+    else:
+        scope = (*_media_scope(db, user),)
     if trash:
         stmt = select(Media).where(
             *scope, Media.deleted_at.is_not(None)
