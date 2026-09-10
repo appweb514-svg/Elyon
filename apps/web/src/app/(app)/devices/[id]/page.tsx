@@ -65,6 +65,7 @@ type QueueItem = {
   media_id: string;
   name: string;
   kind: string;
+  duration_seconds?: number | null;
   playing: boolean;
   paused?: boolean;
 };
@@ -422,6 +423,20 @@ export default function DeviceDetailPage() {
     try {
       await api.post(`/api/devices/${deviceId}/queue/stop`, {});
       setNotice("Diffusion arrêtée.");
+      await refreshAll();
+    } catch (err) {
+      setError(String((err as Error).message ?? err));
+    }
+  }
+
+  async function queueDuration(mediaId: string, raw: string) {
+    const duration = Number(raw);
+    if (!Number.isInteger(duration) || duration < 1) return;
+    try {
+      await api.patch(`/api/devices/${deviceId}/queue/${mediaId}`, {
+        duration_seconds: duration,
+      });
+      setNotice("Durée mise à jour.");
       await refreshAll();
     } catch (err) {
       setError(String((err as Error).message ?? err));
@@ -909,6 +924,7 @@ export default function DeviceDetailPage() {
                           <th className="px-3 py-2">#</th>
                           <th className="px-3 py-2">Média</th>
                           <th className="px-3 py-2">Type</th>
+                          <th className="px-3 py-2">Durée (s)</th>
                           <th className="px-3 py-2">État</th>
                           <th className="px-3 py-2 text-right">Actions</th>
                         </tr>
@@ -919,6 +935,17 @@ export default function DeviceDetailPage() {
                             <td className="px-3 py-2 text-xs text-muted-foreground">{i + 1}</td>
                             <td className="max-w-[220px] truncate px-3 py-2 font-medium">{item.name}</td>
                             <td className="px-3 py-2 text-xs text-muted-foreground">{item.kind}</td>
+                            <td className="px-3 py-2">
+                              <Input
+                                type="number"
+                                min={1}
+                                defaultValue={item.duration_seconds ?? ""}
+                                placeholder="auto"
+                                aria-label={`Durée de ${item.name}`}
+                                className="h-8 w-20 text-xs"
+                                onBlur={(event) => void queueDuration(item.media_id, event.target.value)}
+                              />
+                            </td>
                             <td className="px-3 py-2">
                               {item.playing ? (
                                 <Badge variant="success">En lecture</Badge>

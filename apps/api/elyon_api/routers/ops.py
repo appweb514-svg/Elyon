@@ -206,7 +206,7 @@ def fetch_commands(
     return [CommandOut.model_validate(c) for c in commands]
 
 
-def _device_queue_items(device: Device) -> list[dict[str, str]]:
+def _device_queue_items(device: Device) -> list[dict[str, Any]]:
     if not device.queue_json:
         return []
     try:
@@ -344,6 +344,7 @@ def get_device_queue(
                 "media_id": media.id,
                 "name": media.name,
                 "kind": media.kind.value,
+                "duration_seconds": item.get("duration_seconds"),
                 "playing": device.current_media_id == media.id
                 and device.player_state == "playing",
                 "paused": device.current_media_id == media.id
@@ -376,11 +377,58 @@ def queue_add(
     items = _device_queue_items(device)
     if any(i["media_id"] == media.id for i in items):
         raise HTTPException(status_code=409, detail="Déjà dans la file")
-    items.append({"media_id": media.id})
+    duration = body.get("duration_seconds")
+    if duration is not None:
+        try:
+            duration = int(duration)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="Durée invalide") from None
+        if not 1 <= duration <= 86_400:
+            raise HTTPException(status_code=422, detail="Durée entre 1 et 86400 secondes")
+    item: dict[str, Any] = {"media_id": media.id}
+    if duration is not None:
+        item["duration_seconds"] = duration
+    items.append(item)
     device.queue_json = json.dumps(items)
     audit(db, "device.queue_add", "device", device.id, detail=media.name, user=user)
     db.commit()
     return {"items": items}
+
+
+@router.patch("/devices/{device_id}/queue/{media_id}")
+def queue_duration(
+    device_id: str,
+    media_id: str,
+    body: dict,
+    user: User = Depends(require_permission(Permission.DEVICE_COMMAND)),
+    db: Session = Depends(get_db),
+) -> dict:
+    device = db.get(Device, device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail="Appareil introuvable")
+    require_site_access(db, user, device.org_id)
+    try:
+        duration = int(str(body.get("duration_seconds")))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="Durée invalide") from None
+    if not 1 <= duration <= 86_400:
+        raise HTTPException(status_code=422, detail="Durée entre 1 et 86400 secondes")
+    items = _device_queue_items(device)
+    item = next((entry for entry in items if entry.get("media_id") == media_id), None)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Média absent de la file")
+    item["duration_seconds"] = duration
+    device.queue_json = json.dumps(items)
+    audit(
+        db,
+        "device.queue_duration",
+        "device",
+        device.id,
+        detail=f"{media_id}={duration}",
+        user=user,
+    )
+    db.commit()
+    return {"media_id": media_id, "duration_seconds": duration}
 
 
 @router.delete("/devices/{device_id}/queue/{media_id}", status_code=204)
@@ -1340,7 +1388,17 @@ def _queue_advance_if_needed(db: Session, device: Device, settings) -> None:
 
 
 def _queue_threshold_seconds(db: Session, device: Device, settings) -> float:
-    """Durée d'affichage du média de tête (10 s image, durée réelle vidéo)."""
+    """Durée de l'élément de tête, ou défaut image/PDF 10 s/vidéo réelle."""
+    current_item = next(
+        (item for item in _device_queue_items(device)
+         if item.get("media_id") == device.current_media_id),
+        None,
+    )
+    if current_item and current_item.get("duration_seconds") is not None:
+        try:
+            return max(1.0, float(current_item["duration_seconds"]))
+        except (TypeError, ValueError):
+            pass
     media = db.get(Media, device.current_media_id) if device.current_media_id else None
     if media is None or media.kind != MediaKind.VIDEO:
         return 10.0
