@@ -20,7 +20,13 @@ type ManifestMedia = {
   kind: string;
   sha256: string;
 };
-type ManifestEntry = { media_id: string; name: string; kind: string; duration_seconds?: number | null };
+type ManifestEntry = {
+  media_id: string;
+  name: string;
+  kind: string;
+  duration_seconds?: number | null;
+  url?: string | null;
+};
 type ManifestBlock = { schedule_id: string; schedule_name: string; priority: number; entries: ManifestEntry[] };
 type Manifest = {
   version: string;
@@ -30,7 +36,13 @@ type Manifest = {
   site_timezone?: string | null;
 };
 
-type QueueItem = { media_id: string; kind: string; name: string; duration: number | null };
+type QueueItem = {
+  media_id: string;
+  kind: string;
+  name: string;
+  duration: number | null;
+  url?: string | null;
+};
 type WidgetFeed = {
   ticker_text: string | null;
   ticker_speed: string | null;
@@ -160,6 +172,7 @@ export default function PlayerPage() {
                 kind: entry.kind,
                 name: entry.name,
                 duration: entry.duration_seconds ?? null,
+                url: entry.url ?? null,
               });
             }
           }
@@ -305,8 +318,25 @@ function tickerSpeed(w: Record<string, unknown> | undefined): string {
   return String(p.speed ?? "normal");
 }
 
-/** Lecture d'un item : vidéo native ou image (durée fixe ou 10 s par défaut). */
+/** Lecture d'un item : vidéo native, image ou page web (iframe). */
 async function playItem(s: Stored, item: QueueItem, alive: () => boolean): Promise<void> {
+  if (item.kind === "web") {
+    const target = item.url ?? "";
+    if (!target) return;
+    await new Promise<void>((resolve) => {
+      const iframe = document.createElement("iframe");
+      iframe.src = target;
+      iframe.title = item.name;
+      iframe.className = "absolute inset-0 h-full w-full border-0 bg-white";
+      const root = document.getElementById("kiosk-root");
+      if (root) {
+        root.innerHTML = "";
+        root.appendChild(iframe);
+      }
+      setTimeout(resolve, (item.duration ?? 30) * 1000);
+    });
+    return;
+  }
   const url = deviceFileUrl(s.device_id, item.media_id, s.token);
   if (item.kind === "video") {
     await new Promise<void>((resolve) => {

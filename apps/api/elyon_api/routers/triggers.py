@@ -74,11 +74,9 @@ async def trigger_show(
     if media is None or media.org_id != device.org_id:
         raise HTTPException(status_code=404, detail="Média introuvable")
 
-    payload: dict[str, str | int] = {
-        "media_id": media.id,
-        "name": media.name,
-        "kind": media.kind.value,
-    }
+    from elyon_api.services.manifest import show_payload
+
+    payload: dict[str, str | int] = show_payload(media)
     if duration is not None:
         try:
             duration_seconds = int(duration)
@@ -147,11 +145,9 @@ async def trigger_playlist(
     if media is None or media.status != MediaStatus.READY:
         raise HTTPException(status_code=409, detail="Premier média non prêt")
 
-    payload: dict[str, str | int] = {
-        "media_id": media.id,
-        "name": media.name,
-        "kind": media.kind.value,
-    }
+    from elyon_api.services.manifest import show_payload
+
+    payload: dict[str, str | int] = show_payload(media)
     if item.duration_seconds is not None:
         payload["duration_seconds"] = item.duration_seconds
 

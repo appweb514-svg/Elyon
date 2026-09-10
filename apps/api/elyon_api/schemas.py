@@ -232,6 +232,15 @@ class MediaRename(BaseModel):
     name: str = Field(min_length=1, max_length=160)
 
 
+class MediaUrlCreate(BaseModel):
+    """Média « lien web » : une page affichée telle quelle par le player."""
+
+    url: str = Field(min_length=8, max_length=2000)
+    name: str | None = Field(default=None, max_length=160)
+    # Org cible : requis pour un superadmin sans organisation.
+    org_id: str | None = None
+
+
 class MediaShowRequest(BaseModel):
     device_id: str = Field(min_length=1, max_length=32)
     duration_seconds: int | None = Field(default=None, ge=1)
@@ -262,6 +271,8 @@ class MediaOut(BaseModel):
     name: str
     original_filename: str
     kind: MediaKind
+    # Renseigné pour un média web (URL affichable).
+    url: str | None = None
     mime_type: str
     size_bytes: int
     sha256: str | None = None

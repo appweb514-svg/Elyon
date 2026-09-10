@@ -83,6 +83,8 @@ def make_file_handlers(data_dir: Path) -> dict[str, Callable[[Command], None]]:
             "name": payload.get("name") or media_id,
             "kind": payload.get("kind", "image"),
         }
+        if payload.get("url"):
+            spec["url"] = payload["url"]
         if payload.get("duration_seconds") is not None:
             spec["duration_seconds"] = payload["duration_seconds"]
         (show_dir / "request.json").write_text(

@@ -126,6 +126,9 @@ def process_media(
     disque du backend, donc compatible stockage local **et S3**. Le paramètre
     `storage` permet d'injecter un backend (tests, outillage).
     """
+    if media.kind == MediaKind.WEB:
+        media.status = MediaStatus.READY
+        return media
     storage = storage or build_storage(settings)
     with tempfile.TemporaryDirectory(prefix="elyon-media-") as tmp_raw:
         tmp = Path(tmp_raw)

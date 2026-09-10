@@ -7,7 +7,7 @@ import datetime as dt
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-from elyon_api.models import Media
+from elyon_api.models import Media, MediaKind
 from elyon_api.services.storage import build_storage
 
 TRASH_RETENTION_DAYS = 30
@@ -23,6 +23,10 @@ def purge_expired_trash(factory: sessionmaker, settings) -> int:
             select(Media).where(Media.deleted_at.is_not(None), Media.deleted_at < cutoff)
         ).all()
         for media in expired:
+            if media.kind == MediaKind.WEB:
+                db.delete(media)
+                purged += 1
+                continue
             storage.delete(media.storage_path)
             if media.pages_json:
                 import json

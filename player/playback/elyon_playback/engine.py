@@ -38,13 +38,14 @@ def write_now_playing(path: Path, payload: dict[str, Any]) -> None:
 
 @dataclass(frozen=True)
 class PlayItem:
-    """Élément élémentaire de la file de lecture (image, page ou vidéo)."""
+    """Élément élémentaire de la file de lecture (image, page, vidéo, URL)."""
 
-    kind: str  # "image" | "page" | "video"
+    kind: str  # "image" | "page" | "video" | "url"
     path: Path
     duration_seconds: float | None = None  # None = jusqu'à la fin (vidéo)
     media_id: str = ""
     name: str = ""
+    url: str = ""  # page web (kind="url")
 
 
 def build_queue(layout: dict[str, Any], blob_dir: Path) -> list[PlayItem]:
@@ -69,6 +70,18 @@ def build_queue(layout: dict[str, Any], blob_dir: Path) -> list[PlayItem]:
         if media is None:
             continue
         duration = float(entry.get("duration_seconds") or 10.0)
+        if media["kind"] == "web":
+            items.append(
+                PlayItem(
+                    kind="url",
+                    path=Path("/"),
+                    duration_seconds=float(entry.get("duration_seconds") or 30.0),
+                    media_id=media["media_id"],
+                    name=media["name"],
+                    url=str(media.get("url") or ""),
+                )
+            )
+            continue
         main = blob_dir / media["main_blob"]
         if media["kind"] == "video":
             items.append(
@@ -158,6 +171,9 @@ class PlaybackEngine:
             write_now_playing(self.status_file, payload)
 
     def _write_screen_frame(self, item: PlayItem, display_path: Path | None = None) -> None:
+        if item.kind == "url":
+            # Impossible de capturer une page web côté player.
+            return
         """Capture de ce qui est à l'écran, lue par le flux « direct » du serveur.
 
         Images/PDF : copie du fichier affiché (déjà un bitmap, widgets
@@ -202,6 +218,23 @@ class PlaybackEngine:
 
     def play_item(self, item: PlayItem) -> None:
         self.current_media_id = item.media_id or None
+        if item.kind == "url":
+            duration = item.duration_seconds or 30.0
+            self._publish_status(
+                {
+                    "media_id": item.media_id or None,
+                    "name": item.name,
+                    "kind": "web",
+                    "path": item.url,
+                    "state": "playing",
+                }
+            )
+            try:
+                self.renderer.play_url(item.url, timeout_seconds=duration)
+            except NotImplementedError:
+                # Renderer sans navigateur (mpv) : on passe sans tuer la boucle.
+                self.sleep_fn(min(duration, 1.0))
+            return
         # Widget « vivant » (horloge, météo, ticker RSS) : l'image est
         # recomposée à intervalles réguliers pour un affichage en temps réel.
         if item.kind in ("image", "page") and has_live_widgets(self.active_widgets):
@@ -261,14 +294,26 @@ class PlaybackEngine:
             return None
         media_id = str(show["media_id"])
         kind = str(show.get("kind") or "image")
-        path = self._data_dir() / "show" / media_id
-        if not path.exists():
-            return None
         duration = show.get("duration_seconds")
         try:
             duration_f = float(duration) if duration else None
         except (TypeError, ValueError):
             duration_f = None
+        if kind == "web":
+            url = str(show.get("url") or "")
+            if not url:
+                return None
+            return PlayItem(
+                kind="url",
+                path=Path("/"),
+                duration_seconds=duration_f,
+                media_id=media_id,
+                name=str(show.get("name") or media_id),
+                url=url,
+            )
+        path = self._data_dir() / "show" / media_id
+        if not path.exists():
+            return None
         return PlayItem(
             kind="video" if kind == "video" else "image",
             path=path,
@@ -296,6 +341,29 @@ class PlaybackEngine:
             duration_f = float(duration) if duration else None
         except (TypeError, ValueError):
             duration_f = None
+        if kind == "web":
+            url = str(request.get("url") or "")
+            if not url:
+                self.show_clear(self._data_dir())
+                return
+            self.current_media_id = media_id
+            self._publish_status(
+                {
+                    "media_id": media_id,
+                    "name": request.get("name") or media_id,
+                    "kind": "web",
+                    "path": url,
+                    "state": "playing",
+                    "show": True,
+                }
+            )
+            try:
+                self.renderer.play_url(
+                    url, timeout_seconds=duration_f or self.show_loop_seconds
+                )
+            except NotImplementedError:
+                self.sleep_fn(1.0)
+            return
         path = self._data_dir() / "show" / media_id
         if not path.exists():
             # Téléchargement en cours par l'agent — nouvelle tentative au

@@ -62,11 +62,12 @@ Voir `docs/rbac.md` pour le mapping rôle → permissions.
 
 | Méthode | Route | Permission | Description |
 |---|---|---|
-| POST | `/media?name=` | `media.upload` | Upload multipart (image/vidéo/PDF), quota personnel |
+| POST | `/media?name=` | `media.upload` | Upload multipart (image/vidéo/PDF/Office), quota personnel |
+| POST | `/media/url` | `media.upload` | Ajoute un lien web `{url, name?, org_id?}` (page affichée par le player) |
 | GET | `/media?limit=&offset=` · `/media/{id}` | `media.view` | Liste paginable (`X-Total-Count`), détail (kind, sha256, dimensions…). Fichiers servis en streaming (Range supporté) |
 | POST | `/media/{id}/show` | `device.command` | Afficher immédiatement sur un Raspberry (`{device_id, duration_seconds?}`) |
 | POST | `/media/{id}/playlists/{playlist_id}` | `playlist.edit` | Ajouter le média en fin de playliste |
-| GET | `/media/{id}/file` | Bearer device | Fichier original (supporte Range) |
+| GET | `/media/{id}/file` | Bearer device | Fichier original en streaming (Range supporté) |
 | GET | `/media/{id}/device-file` | Bearer device | Fichier pour téléchargement direct d'un Raspberry (commande Afficher) |
 | GET | `/media/{id}/pages/{index}/file` | Bearer device | Page PNG d'un PDF converti |
 | GET | `/media/{id}/pages/{index}/device-file` | Bearer device | Page PNG pour téléchargement direct d'un Raspberry |

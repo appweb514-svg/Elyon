@@ -66,6 +66,9 @@ class MediaKind(enum.StrEnum):
     IMAGE = "image"
     PDF = "pdf"
     OFFICE = "office"
+    # Page web affichée par le player (Chromium / iframe) : `storage_path`
+    # contient l'URL cible, aucun fichier n'est stocké.
+    WEB = "web"
 
 
 class MediaStatus(enum.StrEnum):
@@ -372,6 +375,11 @@ class Media(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=now)
 
     playlists: Mapped[list[PlaylistItem]] = relationship(back_populates="media")
+
+    @property
+    def url(self) -> str | None:
+        """URL cible d'un média web (None pour les autres types)."""
+        return self.storage_path if self.kind == MediaKind.WEB else None
 
     @property
     def pages_count(self) -> int | None:

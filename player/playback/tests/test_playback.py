@@ -916,3 +916,29 @@ def test_day_label_uses_real_weekday():
     assert _day_label("2026-09-13", 3, now) == "dim"
     # Date invalide → repli sur l'index à partir d'aujourd'hui.
     assert _day_label("", 0, now) == "jeu"
+
+
+def test_build_queue_includes_web_item(tmp_path):
+    """Un média web devient un item « url » dans la file de lecture."""
+    layout = {
+        "blocks": [
+            {
+                "schedule_id": "s1",
+                "priority": 1,
+                "entries": [{"media_id": "w1", "duration_seconds": 45}],
+            }
+        ],
+        "media": [
+            {
+                "media_id": "w1",
+                "name": "Portail",
+                "kind": "web",
+                "url": "https://elyon.int.labvirtuel.fr/media",
+            }
+        ],
+    }
+    items = build_queue(layout, tmp_path / "blobs")
+    assert len(items) == 1
+    assert items[0].kind == "url"
+    assert items[0].url == "https://elyon.int.labvirtuel.fr/media"
+    assert items[0].duration_seconds == 45.0

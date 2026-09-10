@@ -15,7 +15,7 @@ class Renderer(Protocol):
 
     def play_video(self, path: Path) -> None: ...
 
-    def play_url(self, url: str) -> None: ...
+    def play_url(self, url: str, timeout_seconds: float | None = None) -> None: ...
 
     def blank(self) -> None: ...
 
@@ -58,7 +58,7 @@ class MpvRenderer:
         self._stop_blank()
         self._run([str(path)])
 
-    def play_url(self, url: str) -> None:
+    def play_url(self, url: str, timeout_seconds: float | None = None) -> None:
         # Les URL web sont jouées par Chromium kiosque, pas par mpv.
         raise NotImplementedError("Utiliser ChromiumRenderer pour les URL")
 
@@ -223,10 +223,10 @@ class DummyRenderer:
         self._status({"kind": "video", "path": str(path), "state": "playing"})
         self._sleep(1.0)
 
-    def play_url(self, url: str) -> None:
+    def play_url(self, url: str, timeout_seconds: float | None = None) -> None:
         self.events.append(("url", url))
         self._status({"kind": "url", "path": url, "state": "playing"})
-        self._sleep(1.0)
+        self._sleep(timeout_seconds if timeout_seconds is not None else 1.0)
 
     def blank(self) -> None:
         self.events.append(("blank", None))

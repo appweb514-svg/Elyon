@@ -35,7 +35,30 @@ def _file_digest(storage: StorageBackend, path: str) -> tuple[str, int]:
     return digest.hexdigest(), size
 
 
+def show_payload(media: Media) -> dict[str, str | int]:
+    """Payload d'une commande SHOW (inclut l'URL pour un média web)."""
+    payload: dict[str, str | int] = {
+        "media_id": media.id,
+        "name": media.name,
+        "kind": media.kind.value,
+    }
+    if media.kind == MediaKind.WEB:
+        payload["url"] = media.storage_path
+    return payload
+
+
 def _media_entry(media: Media, storage: StorageBackend, settings: Settings) -> dict:
+    if media.kind == MediaKind.WEB:
+        # Page web : aucun blob ni empreinte, l'URL est la ressource.
+        return {
+            "media_id": media.id,
+            "name": media.name,
+            "kind": media.kind.value,
+            "url": media.storage_path,
+            "sha256": None,
+            "size_bytes": 0,
+            "pages": None,
+        }
     base = settings.public_base_url.rstrip("/")
     entry = {
         "media_id": media.id,

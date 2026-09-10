@@ -223,12 +223,12 @@ def _issue_show(db: Session, device: Device, media: Media, user: User) -> Comman
     ):
         stale.status = CommandStatus.FAILED
         stale.error = "Remplacé par une diffusion plus récente"
+    from elyon_api.services.manifest import show_payload
+
     cmd = Command(
         device_id=device.id,
         type=CommandType.SHOW,
-        payload=json.dumps(
-            {"media_id": media.id, "name": media.name, "kind": media.kind.value}
-        ),
+        payload=json.dumps(show_payload(media)),
     )
     db.add(cmd)
     device.current_media_id = media.id
@@ -1288,12 +1288,12 @@ def _queue_advance_if_needed(db: Session, device: Device, settings) -> None:
     ):
         stale.status = CommandStatus.FAILED
         stale.error = "Remplacé (auto-enchaînement)"
+    from elyon_api.services.manifest import show_payload
+
     cmd = Command(
         device_id=device.id,
         type=CommandType.SHOW,
-        payload=json.dumps(
-            {"media_id": media.id, "name": media.name, "kind": media.kind.value}
-        ),
+        payload=json.dumps(show_payload(media)),
     )
     db.add(cmd)
     device.current_media_id = media.id

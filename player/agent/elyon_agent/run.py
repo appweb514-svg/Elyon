@@ -167,6 +167,22 @@ def make_show_handler(
         if not media_id:
             raise ValueError("Commande SHOW sans media_id")
         show_dir.mkdir(parents=True, exist_ok=True)
+        if kind == "web":
+            url = str(payload.get("url") or "")
+            if not url:
+                raise ValueError("Commande SHOW web sans url")
+            spec: dict[str, Any] = {
+                "media_id": media_id,
+                "name": payload.get("name") or media_id,
+                "kind": "web",
+                "url": url,
+            }
+            if payload.get("duration_seconds") is not None:
+                spec["duration_seconds"] = payload["duration_seconds"]
+            (show_dir / "request.json").write_text(
+                json.dumps(spec), encoding="utf-8"
+            )
+            return
         dest = show_dir / media_id
         page_index = None
         if kind in ("pdf", "office"):

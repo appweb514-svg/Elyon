@@ -4,6 +4,7 @@ import datetime as dt
 import hashlib
 import json
 import re
+import urllib.parse
 from typing import Any, BinaryIO, cast
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, UploadFile
@@ -40,6 +41,7 @@ from elyon_api.schemas import (
     MediaOut,
     MediaRename,
     MediaShowRequest,
+    MediaUrlCreate,
     TeamShareIn,
 )
 from elyon_api.services.storage import build_storage, safe_storage_path
@@ -198,6 +200,49 @@ def upload_media(
     return MediaOut.model_validate(media)
 
 
+@router.post("/url", status_code=201)
+def add_media_url(
+    body: MediaUrlCreate,
+    user: User = Depends(require_permission(Permission.MEDIA_UPLOAD)),
+    db: Session = Depends(get_db),
+) -> MediaOut:
+    """Ajoute un média « lien web » (page affichée par le player).
+
+    Aucun fichier n'est stocké : l'URL est transmise dans le manifeste et
+    ouverte par le player (navigateur kiosque, iframe du player web).
+    """
+    if user.role != Role.SUPERADMIN:
+        org = user.org_id
+    else:
+        org = body.org_id or db.scalar(select(Organization.id).order_by(Organization.name))
+    if org is None:
+        raise HTTPException(status_code=400, detail="Aucune organisation disponible")
+    if user.role == Role.SUPERADMIN and db.get(Organization, org) is None:
+        raise HTTPException(status_code=404, detail="Organisation introuvable")
+    raw = body.url.strip()
+    parsed = urllib.parse.urlsplit(raw)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise HTTPException(status_code=422, detail="URL invalide (http/https requis)")
+    media = Media(
+        org_id=org,
+        user_id=user.id,
+        team_id=user.team_id,
+        name=(body.name or "").strip() or raw,
+        original_filename=raw,
+        kind=MediaKind.WEB,
+        mime_type="text/uri-list",
+        size_bytes=0,
+        storage_path=raw,
+        status=MediaStatus.READY,
+    )
+    db.add(media)
+    db.commit()
+    db.refresh(media)
+    audit(db, "media.add_url", "media", media.id, detail=raw, user=user)
+    db.commit()
+    return MediaOut.model_validate(media)
+
+
 def _get_device(db: Session, user: User, device_id: str) -> Device:
     device = db.get(Device, device_id)
     if device is None:
@@ -261,11 +306,9 @@ def show_media(
     ):
         stale.status = CommandStatus.FAILED
         stale.error = "Remplacé par une diffusion plus récente"
-    payload: dict[str, str | int] = {
-        "media_id": media.id,
-        "name": media.name,
-        "kind": media.kind.value,
-    }
+    from elyon_api.services.manifest import show_payload
+
+    payload: dict[str, str | int] = show_payload(media)
     if body.duration_seconds is not None:
         payload["duration_seconds"] = body.duration_seconds
     cmd = Command(
@@ -863,6 +906,9 @@ def empty_trash(
 
 
 def _purge_files(storage, media: Media) -> None:
+    if media.kind == MediaKind.WEB:
+        # Aucun fichier : le « chemin » est l'URL cible.
+        return
     storage.delete(media.storage_path)
     if media.pages_json:
         try:

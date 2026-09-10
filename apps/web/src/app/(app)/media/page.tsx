@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, Download, Eye, FolderInput, ListPlus, Pencil, Share2, Trash2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, Eye, FolderInput, Globe, ListPlus, Pencil, Share2, Trash2 } from "lucide-react";
 
 import { api, formatBytes, formatDate } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
@@ -31,6 +31,7 @@ type Media = {
   name: string;
   original_filename: string;
   kind: string;
+  url?: string | null;
   mime_type: string;
   size_bytes: number;
   status: string;
@@ -102,6 +103,11 @@ export default function MediaPage() {
   const [previewMedia, setPreviewMedia] = useState<Media | null>(null);
   const [previewPage, setPreviewPage] = useState(0);
   const [previewPageError, setPreviewPageError] = useState(false);
+
+  const [linkOpen, setLinkOpen] = useState(false);
+  const [linkUrl, setLinkUrl] = useState("");
+  const [linkName, setLinkName] = useState("");
+  const [linkSaving, setLinkSaving] = useState(false);
 
   function openPreview(media: Media) {
     setPreviewPage(0);
@@ -243,6 +249,27 @@ export default function MediaPage() {
     }
   }
 
+  async function addUrl() {
+    setLinkSaving(true);
+    setError(null);
+    try {
+      await api.post("/api/media/url", {
+        url: linkUrl.trim(),
+        name: linkName.trim() || null,
+        ...(isSuperadmin && selectedOrgId ? { org_id: selectedOrgId } : {}),
+      });
+      setNotice(`Lien « ${linkName.trim() || linkUrl.trim()} » ajouté.`);
+      setLinkOpen(false);
+      setLinkUrl("");
+      setLinkName("");
+      await reload();
+    } catch (err) {
+      setError(String((err as Error).message ?? err));
+    } finally {
+      setLinkSaving(false);
+    }
+  }
+
   function previewUrl(media: Media): string {
     // PDF et Office (convertis en pages PNG) : on affiche la première page.
     if (media.kind === "pdf" || media.kind === "office") {
@@ -316,8 +343,8 @@ export default function MediaPage() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Médias</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Images, vidéos, PDF et documents Office (les présentations sont
-            converties en diaporama). Le titre est modifiable via le crayon.
+            Images, vidéos, PDF, documents Office (présentations converties en
+            diaporama) et liens web. Le titre est modifiable via le crayon.
           </p>
         </div>
         <div className="flex flex-wrap items-end gap-2">
@@ -336,6 +363,9 @@ export default function MediaPage() {
               </select>
             </label>
           )}
+          <Button variant="outline" onClick={() => setLinkOpen(true)}>
+            <Globe /> Ajouter un lien
+          </Button>
           <Input
             ref={fileRef}
             type="file"
@@ -484,10 +514,23 @@ export default function MediaPage() {
                 <button
                   type="button"
                   className="flex h-28 w-full cursor-pointer items-center justify-center overflow-hidden rounded-t-[calc(0.75rem-1px)] bg-muted transition-opacity hover:opacity-90"
-                  title="Prévisualiser"
-                  onClick={() => openPreview(media)}
+                  title={media.kind === "web" ? "Ouvrir le lien" : "Prévisualiser"}
+                  onClick={() => {
+                    if (media.kind === "web" && media.url) {
+                      window.open(media.url, "_blank", "noopener,noreferrer");
+                      return;
+                    }
+                    openPreview(media);
+                  }}
                 >
-                  {media.kind === "video" ? (
+                  {media.kind === "web" ? (
+                    <span className="flex flex-col items-center gap-1 px-2 text-center">
+                      <Globe className="h-8 w-8 text-primary" />
+                      <span className="line-clamp-2 break-all text-[10px] text-muted-foreground">
+                        {media.url}
+                      </span>
+                    </span>
+                  ) : media.kind === "video" ? (
                     <video
                       className="max-h-28"
                       src={`/api/media/${media.id}/preview-file`}
@@ -526,9 +569,11 @@ export default function MediaPage() {
                       <p className="truncate text-sm font-medium" title={media.name}>
                         {media.name}
                       </p>
-                      <span className="shrink-0 text-[10px] uppercase text-muted-foreground">
-                        {(media.original_filename.split(".").pop() || "").slice(0, 4)}
-                      </span>
+                      {media.kind !== "web" && (
+                        <span className="shrink-0 text-[10px] uppercase text-muted-foreground">
+                          {(media.original_filename.split(".").pop() || "").slice(0, 4)}
+                        </span>
+                      )}
                       <button
                         type="button"
                         className="text-muted-foreground transition-colors hover:text-primary"
@@ -549,14 +594,16 @@ export default function MediaPage() {
                   </div>
                   {view !== "trash" && (
                     <div className="flex items-center gap-0.5 pt-0.5">
-                      <button
-                        type="button"
-                        title="Télécharger"
-                        className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                        onClick={() => window.open(`/api/media/${media.id}/download`, "_blank")}
-                      >
-                        <Download className="h-3.5 w-3.5" />
-                      </button>
+                      {media.kind !== "web" && (
+                        <button
+                          type="button"
+                          title="Télécharger"
+                          className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                          onClick={() => window.open(`/api/media/${media.id}/download`, "_blank")}
+                        >
+                          <Download className="h-3.5 w-3.5" />
+                        </button>
+                      )}
                       <button
                         type="button"
                         title="Afficher sur un écran"
@@ -844,6 +891,52 @@ export default function MediaPage() {
               }
             >
               <Download /> Télécharger
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={linkOpen} onOpenChange={setLinkOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Ajouter un lien web</DialogTitle>
+            <DialogDescription>
+              La page sera affichée telle quelle par le player (navigateur
+              kiosque sur Raspberry, iframe du player web).
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <Label htmlFor="link-url">URL (http/https)</Label>
+              <Input
+                id="link-url"
+                value={linkUrl}
+                onChange={(e) => setLinkUrl(e.target.value)}
+                placeholder="https://elyon.int.labvirtuel.fr/media"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && linkUrl.trim().length >= 8) void addUrl();
+                }}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="link-name">Nom affiché (facultatif)</Label>
+              <Input
+                id="link-name"
+                value={linkName}
+                onChange={(e) => setLinkName(e.target.value)}
+                placeholder="Page d'accueil"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setLinkOpen(false)}>
+              Annuler
+            </Button>
+            <Button
+              onClick={() => void addUrl()}
+              disabled={linkSaving || linkUrl.trim().length < 8}
+            >
+              {linkSaving ? "Ajout…" : "Ajouter"}
             </Button>
           </DialogFooter>
         </DialogContent>

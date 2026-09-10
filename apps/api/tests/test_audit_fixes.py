@@ -436,3 +436,79 @@ def test_auto_advance_allowed_respects_stop_freeze():
     assert not auto_advance_allowed(device)
     device.queue_stop_until = dt.datetime.now(dt.UTC) - dt.timedelta(seconds=1)
     assert auto_advance_allowed(device)
+
+
+# --- Médias « lien web » ------------------------------------------------
+
+
+def test_add_web_media_url(client: TestClient):
+    _org_setup(client)
+    created = auth_json(
+        client,
+        "POST",
+        "/api/media/url",
+        json={"url": "https://elyon.int.labvirtuel.fr/media", "name": "Portail"},
+    )
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["kind"] == "web"
+    assert body["url"] == "https://elyon.int.labvirtuel.fr/media"
+    assert body["status"] == "ready"
+    assert body["size_bytes"] == 0
+    listing = client.get("/api/media").json()
+    assert any(item["id"] == body["id"] for item in listing)
+
+    for invalid in ("ftp://exemple.fr/x", "javascript:alert(1)", "pas-une-url"):
+        response = auth_json(client, "POST", "/api/media/url", json={"url": invalid})
+        assert response.status_code == 422, f"{invalid}: {response.text}"
+
+
+def test_web_media_show_payload_and_manifest_entry():
+    from types import SimpleNamespace
+
+    from elyon_api.models import MediaKind
+    from elyon_api.services.manifest import _media_entry, show_payload
+
+    media = SimpleNamespace(
+        id="mweb",
+        name="Portail",
+        kind=MediaKind.WEB,
+        storage_path="https://elyon.int.labvirtuel.fr/media",
+        sha256=None,
+        size_bytes=0,
+        pages_json=None,
+        mime_type="text/uri-list",
+    )
+    payload = show_payload(media)
+    assert payload == {
+        "media_id": "mweb",
+        "name": "Portail",
+        "kind": "web",
+        "url": "https://elyon.int.labvirtuel.fr/media",
+    }
+    entry = _media_entry(media, None, None)
+    assert entry["kind"] == "web"
+    assert entry["url"] == "https://elyon.int.labvirtuel.fr/media"
+    assert entry["size_bytes"] == 0
+
+
+def test_viewer_cannot_add_web_media(client: TestClient):
+    org = _org_setup(client)
+    created = auth_json(
+        client,
+        "POST",
+        "/api/users",
+        json={
+            "email": "viewer-web@test.local",
+            "password": "motdepasse-long",
+            "full_name": "Viewer Web",
+            "role": "viewer",
+            "org_id": org["id"],
+        },
+    )
+    assert created.status_code == 201, created.text
+    login(client, "viewer-web@test.local")
+    response = auth_json(
+        client, "POST", "/api/media/url", json={"url": "https://exemple.fr/page"}
+    )
+    assert response.status_code == 403
