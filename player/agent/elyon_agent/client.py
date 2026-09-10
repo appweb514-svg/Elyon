@@ -116,6 +116,7 @@ class ElyonClient:
         state: DeviceState,
         player_state: str = "idle",
         current_media_id: str | None = None,
+        page_index: int | None = None,
         storage_free_bytes: int | None = None,
         agent_version: str = "0.1.0",
         uptime_seconds: int | None = None,
@@ -131,6 +132,7 @@ class ElyonClient:
             json={
                 "state": player_state,
                 "current_media_id": current_media_id,
+                "page_index": page_index,
                 "storage_free_bytes": storage_free_bytes,
                 "agent_version": agent_version,
                 "uptime_seconds": uptime_seconds,

@@ -92,7 +92,7 @@ Voir `docs/rbac.md` pour le mapping rôle → permissions.
 | GET | `/devices/{id}/manifest` | Bearer device | Dernier manifeste (payload + signature Ed25519) |
 | POST | `/devices/{id}/heartbeat` | Bearer device | État (state, média courant, stockage libre) |
 | GET | `/devices/{id}/commands` | Bearer device | Commandes en attente |
-| POST | `/devices/{id}/commands` | `device.command` | Envoie reboot/resync/blank/unblank/capture/show |
+| POST | `/devices/{id}/commands` | `device.command` | Envoie reboot/resync/blank/unblank/capture/show/pause/resume |
 | POST | `/devices/{id}/commands/{cmd_id}/ack` | Bearer device | Accusé de traitement |
 | GET | `/events` | `device.view` | Journal d'événements filtrable |
 | GET | `/dashboard` | `device.view` | Compteurs + derniers événements |

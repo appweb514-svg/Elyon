@@ -109,6 +109,9 @@ def heartbeat(
     device.last_seen_at = now
     device.player_state = body.state
     device.current_media_id = body.current_media_id
+    device.current_page_index = (
+        body.page_index if body.state == "playing" and body.page_index is not None else None
+    )
     # Télémétrie
     device.uptime_seconds = body.uptime_seconds
     device.load_avg = body.load_avg
@@ -233,6 +236,7 @@ def _issue_show(db: Session, device: Device, media: Media, user: User) -> Comman
     db.add(cmd)
     device.current_media_id = media.id
     device.player_state = "playing"
+    device.is_paused = False
     audit(db, "media.show", "media", media.id, detail=f"device={device.id} {media.name}", user=user)
     db.commit()
     db.refresh(cmd)
@@ -257,6 +261,7 @@ def device_widgets_feed(
         "ticker_speed": None,
         "weather_text": None,
         "weather_days": None,
+        "weather": None,
     }
     screen = device.screen
     widgets: list[dict[str, Any]] = []
@@ -301,6 +306,20 @@ def device_widgets_feed(
                 and isinstance(f.get("min"), (int, float))
             ]
             out["weather_days"] = "  ".join(days) or None
+            out["weather"] = {
+                "city": city,
+                "temperature": temp if isinstance(temp, (int, float)) else None,
+                "code": entry.get("code"),
+                "forecast": [
+                    {
+                        "date": f.get("date"),
+                        "max": f.get("max"),
+                        "min": f.get("min"),
+                        "code": f.get("code"),
+                    }
+                    for f in forecast
+                ],
+            }
     return out
 
 
@@ -384,6 +403,7 @@ def queue_remove(
         db.add(cmd)
         device.current_media_id = None
         device.player_state = "idle"
+        device.is_paused = False
         playback_state.mark_queue_stopped(device)
         audit(db, "device.queue_remove_playing", "device", device.id, detail=media_id, user=user)
     else:
@@ -460,6 +480,7 @@ def queue_stop(
     db.add(cmd)
     device.current_media_id = None
     device.player_state = "idle"
+    device.is_paused = False
     playback_state.mark_queue_stopped(device)
     audit(db, "device.queue_stop", "device", device.id, user=user)
     db.commit()
@@ -549,6 +570,10 @@ def issue_command(
     if device is None:
         raise HTTPException(status_code=404, detail="Device introuvable")
     require_site_access(db, user, device.org_id)
+    if body.type == CommandType.PAUSE:
+        device.is_paused = True
+    elif body.type == CommandType.RESUME:
+        device.is_paused = False
     cmd = Command(
         device_id=device_id,
         type=body.type,
@@ -659,6 +684,8 @@ def admin_heartbeat(
         "device_status": device.status.value,
         "player_state": device.player_state,
         "current_media_id": device.current_media_id,
+        "current_page_index": device.current_page_index,
+        "is_paused": bool(device.is_paused),
     }
 
 
@@ -785,16 +812,14 @@ def wall_device_live(
             if video is not None and _ffmpeg_available():
                 path, seek, widgets = video
                 sent = 0
-                dims, site_tz = await loop.run_in_executor(
+                _, site_tz = await loop.run_in_executor(
                     None, _device_widget_context_from_factory, db_factory, device_id
                 )
-                if dims:
-                    dims = (min(dims[0], 1280), min(dims[1], 1280))
                 try:
                     async for jpeg in _video_mjpeg_parts(path, seek):
                         if widgets:
                             jpeg = await loop.run_in_executor(
-                                None, _overlay_widgets_jpeg, jpeg, widgets, dims, site_tz
+                                None, _overlay_widgets_jpeg, jpeg, widgets, site_tz
                             )
                         yield _part(jpeg, "image/jpeg")
                         sent += 1
@@ -990,6 +1015,8 @@ def _live_video_state(
         # périmé (le player ne réécrit pas son marqueur lors d'un blank).
         if device.player_state == "blank":
             return None
+        if device.player_state == "paused":
+            return None  # rendu image figé, pas de flux vidéo
         marker = _find_player_marker(device)
         if marker is not None:
             _, marker_file = marker
@@ -1123,7 +1150,7 @@ def _render_live_frame(db_factory, settings, device_id: str) -> bytes | None:
         media = db.get(Media, device.current_media_id) if device.current_media_id else None
         if state == "blank":
             return _placeholder_png_bytes("Écran éteint")
-        if state != "playing" or media is None:
+        if state not in ("playing", "paused") or media is None:
             return _placeholder_png_bytes("Écran en attente")
         storage = build_storage(settings)
 
@@ -1137,7 +1164,11 @@ def _render_live_frame(db_factory, settings, device_id: str) -> bytes | None:
         if media.kind in (MediaKind.PDF, MediaKind.OFFICE) and media.pages_json:
             pages = json.loads(media.pages_json)
             if pages:
-                rel = pages[0]
+                # Suit la page réellement affichée par le player (heartbeat).
+                index = device.current_page_index or 0
+                if index < 0 or index >= len(pages):
+                    index = 0
+                rel = pages[index]
         if not storage.exists(rel):
             return _placeholder_png_bytes("Fichier indisponible")
         try:
@@ -1168,11 +1199,9 @@ def _render_live_frame(db_factory, settings, device_id: str) -> bytes | None:
                 data = f.read()
             img: Image.Image = Image.open(_io.BytesIO(data)).convert("RGB")
             widgets = _device_widgets(device)
-            dims = _screen_dims(device)
-            if widgets and dims:
-                # Canevas plafonné : l'aperçu reste fluide même en 4K.
-                dims = (min(dims[0], 1280), min(dims[1], 1280))
-                img = _fit_on_canvas(img, dims[0], dims[1])
+            if widgets:
+                # Widgets superposés directement au média : pas de recadrage
+                # ni de réduction de l'image (comme le player Python).
                 img = _compose_widget_bar_server(img, widgets, _device_site_tz(device))
             # Plafond de taille pour le flux MJPEG (pages PDF 120 dpi = 1 Mo+).
             img.thumbnail((1280, 1280))
@@ -1252,6 +1281,8 @@ def _queue_advance_if_needed(db: Session, device: Device, settings) -> None:
     le média suivant de la file passe en SHOW.
     """
     if device.player_state != "playing" or not device.current_media_id:
+        return
+    if device.is_paused:
         return
     if not playback_state.auto_advance_allowed(device):
         return
@@ -1376,6 +1407,8 @@ def admin_wall(
                 "current_media_url": (
                     media.storage_path if media and media.kind == MediaKind.WEB else None
                 ),
+                "current_page_index": device.current_page_index,
+                "is_paused": bool(device.is_paused),
                 # Dimensions de l'écran : le cadre d'aperçu suit le format réel
                 # (portrait, 4:3, ultra-large…) au lieu d'un 16:9 figé.
                 "screen_width": screen.width if screen else None,
@@ -1528,24 +1561,6 @@ def _screen_dims(device: Device) -> tuple[int, int] | None:
         return None
 
 
-def _fit_on_canvas(img: Image.Image, width: int, height: int) -> Image.Image:
-    """Cadre le média dans la taille de l'écran (object-contain, fond noir).
-
-    Les widgets sont ensuite composés sur ce canevas : taille et position
-    constantes quel que soit le média affiché.
-    """
-    from PIL import Image as _Image
-
-    if (img.width, img.height) == (width, height):
-        return img
-    canvas = _Image.new("RGB", (width, height), (8, 10, 14))
-    scale = min(width / img.width, height / img.height)
-    new_size = (max(1, int(img.width * scale)), max(1, int(img.height * scale)))
-    resized = img.resize(new_size)
-    canvas.paste(resized, ((width - new_size[0]) // 2, (height - new_size[1]) // 2))
-    return canvas
-
-
 def _device_site_tz(device: Device) -> str:
     try:
         tz = device.screen.site.timezone if device.screen and device.screen.site else None
@@ -1569,8 +1584,8 @@ def _compose_widget_bar_server(
     width, height = img.size
     overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
-    base_size = max(12, height // 30)
-    small_size = max(11, height // 40)
+    base_size = max(12, height // 36)
+    small_size = max(11, height // 46)
     pad_x, pad_y, margin = max(6, width // 150), max(4, height // 90), max(8, width // 100)
     now = dt.datetime.now()
     band_bottom: int | None = None  # bas du bandeau haut (météo)
@@ -1585,13 +1600,14 @@ def _compose_widget_bar_server(
             city = str(params.get("city") or "").strip() or "Météo"
             entry = _widget_feed_entry("weather", params) or {}
             temp = entry.get("temperature")
+            glyph = _weather_glyph(entry.get("code"))
             if isinstance(temp, (int, float)):
-                line1 = f"{city} · {temp:.0f}°C"
+                line1 = f"{glyph} {city} · {temp:.0f}°C"
             else:
-                line1 = city
+                line1 = f"{glyph} {city}"
             fc = entry.get("forecast") or []
             line2 = "  ".join(
-                f"{_fr_day_label(f.get('date'), i)} "
+                f"{_weather_glyph(f.get('code'))} {_fr_day_label(f.get('date'), i)} "
                 f"{round(f.get('max', 0))}°/{round(f.get('min', 0))}°"
                 for i, f in enumerate(fc[:4])
                 if isinstance(f, dict)
@@ -1637,7 +1653,7 @@ def _compose_widget_bar_server(
         bar_w, bar_h = text_w + 2 * pad_x, text_h + 2 * pad_y
         if position == "top-band":
             draw.rounded_rectangle(
-                (0, margin, width, margin + bar_h), radius=max(4, bar_h // 3), fill=(0, 0, 0, 178)
+                (0, margin, width, margin + bar_h), radius=max(4, bar_h // 3), fill=(0, 0, 0, 140)
             )
             draw.multiline_text(
                 ((width - text_w) // 2, margin + pad_y - bbox[1]),
@@ -1665,7 +1681,7 @@ def _compose_widget_bar_server(
                 ((width - fw) // 2 - pad_x, (height - fh) // 2 - pad_y,
                  (width + fw) // 2 + pad_x, (height + fh) // 2 + pad_y),
                 radius=max(4, (fh + 2 * pad_y) // 3),
-                fill=(0, 0, 0, 178),
+                fill=(0, 0, 0, 140),
             )
             draw.multiline_text(
                 ((width - fw) // 2 - fb[0], (height - fh) // 2 - fb[1]),
@@ -1687,7 +1703,7 @@ def _compose_widget_bar_server(
         draw.rounded_rectangle(
             (bar_x, bar_y, bar_x + bar_w, bar_y + bar_h),
             radius=max(4, bar_h // 3),
-            fill=(0, 0, 0, 178),
+            fill=(0, 0, 0, 140),
         )
         draw.multiline_text(
             (bar_x + pad_x - bbox[0], bar_y + pad_y - bbox[1]),
@@ -1702,6 +1718,41 @@ def _compose_widget_bar_server(
 
 # Table lundi→dimanche : datetime.weekday() renvoie 0 pour lundi.
 FR_DAYS_W = ["lun", "mar", "mer", "jeu", "ven", "sam", "dim"]
+
+# Glyphes météo disponibles dans DejaVu Sans (rendu player + aperçu).
+_WEATHER_GLYPHS = {
+    "sun": "\u2600",
+    "cloud": "\u2601",
+    "fog": "\u2630",
+    "rain": "\u2614",
+    "snow": "\u2744",
+    "thunder": "\u26a1",
+}
+
+
+def _weather_icon_kind(code: object) -> str:
+    if not isinstance(code, (int, float)) or isinstance(code, bool):
+        return "cloud"
+    value = int(code)
+    if value == 0:
+        return "sun"
+    if value in (1, 2):
+        return "cloud"
+    if value == 3:
+        return "cloud"
+    if value in (45, 48):
+        return "fog"
+    if 51 <= value <= 67 or value in (80, 81, 82):
+        return "rain"
+    if 71 <= value <= 77 or value in (85, 86):
+        return "snow"
+    if value >= 95:
+        return "thunder"
+    return "cloud"
+
+
+def _weather_glyph(code: object) -> str:
+    return _WEATHER_GLYPHS[_weather_icon_kind(code)]
 
 
 def _fr_day_label(date_str: object, index: int) -> str:
@@ -1724,7 +1775,7 @@ def _draw_server_ticker(
 ) -> None:
     width = img.size[0]
     bar_h = max(18, height // 22)
-    draw.rectangle((0, height - bar_h, width, height), fill=(0, 0, 0, 210))
+    draw.rectangle((0, height - bar_h, width, height), fill=(0, 0, 0, 170))
     try:
         tw = draw.textlength(text, font=font)
     except Exception:  # noqa: BLE001
@@ -1743,14 +1794,9 @@ def _draw_server_ticker(
 def _overlay_widgets_jpeg(
     jpeg: bytes,
     widgets: list[dict[str, Any]],
-    dims: tuple[int, int] | None = None,
     site_tz: str = "Europe/Paris",
 ) -> bytes:
-    """Applique la barre de widgets sur une frame JPEG (aperçu vidéo).
-
-    `dims` = taille de l'écran : la frame est cadrée dans le canevas écran
-    avant composition (widgets à taille/position constantes).
-    """
+    """Applique les widgets sur une frame JPEG (aperçu vidéo), sans recadrage."""
     if not widgets:
         return jpeg
     import io as _io
@@ -1759,8 +1805,6 @@ def _overlay_widgets_jpeg(
 
     try:
         img = Image.open(_io.BytesIO(jpeg)).convert("RGB")
-        if dims:
-            img = _fit_on_canvas(img, dims[0], dims[1])
         composed = _compose_widget_bar_server(img, widgets, site_tz)
         composed.thumbnail((1280, 1280))
         out = _io.BytesIO()

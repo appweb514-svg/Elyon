@@ -317,6 +317,7 @@ def show_media(
         payload=json.dumps(payload),
     )
     db.add(cmd)
+    device.is_paused = False
     db.commit()
     db.refresh(cmd)
     audit(
@@ -362,6 +363,7 @@ def stop_show_media(
         payload=json.dumps({"media_id": media.id}),
     )
     db.add(cmd)
+    device.is_paused = False
     if device.current_media_id == media.id:
         device.player_state = "idle"
         device.current_media_id = None

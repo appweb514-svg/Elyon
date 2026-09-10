@@ -47,6 +47,7 @@ def noop_handler(command: Command) -> None:
 def make_file_handlers(data_dir: Path) -> dict[str, Callable[[Command], None]]:
     """Handlers fichier : blank/unblank/capture/resync/reboot/show (lab + player)."""
     blank_flag = data_dir / "blank"
+    pause_flag = data_dir / "pause"
     captures = data_dir / "captures"
     show_dir = data_dir / "show"
 
@@ -74,6 +75,7 @@ def make_file_handlers(data_dir: Path) -> dict[str, Callable[[Command], None]]:
         lire ; ce handler fichier sert au lab et aux tests.
         """
         show_dir.mkdir(parents=True, exist_ok=True)
+        pause_flag.unlink(missing_ok=True)  # un nouveau média reprend l'affichage
         payload = json.loads(command.payload or "{}")
         media_id = payload.get("media_id")
         if not media_id:
@@ -91,6 +93,12 @@ def make_file_handlers(data_dir: Path) -> dict[str, Callable[[Command], None]]:
             json.dumps(spec),
             encoding="utf-8",
         )
+
+    def pause(_command: Command) -> None:
+        pause_flag.write_text("1", encoding="utf-8")
+
+    def resume(_command: Command) -> None:
+        pause_flag.unlink(missing_ok=True)
 
     def stop_show(command: Command) -> None:
         """Arrête la diffusion « Afficher » en cours (retour au planning)."""
@@ -136,6 +144,8 @@ def make_file_handlers(data_dir: Path) -> dict[str, Callable[[Command], None]]:
         "capture": capture,
         "show": show,
         "stop_show": stop_show,
+        "pause": pause,
+        "resume": resume,
         "reboot": reboot,
         "network": network,
     }

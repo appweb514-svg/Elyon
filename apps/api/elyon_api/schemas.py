@@ -207,6 +207,8 @@ class DeviceOut(BaseModel):
     last_seen_at: dt.datetime | None = None
     player_state: str | None = None
     current_media_id: str | None = None
+    current_page_index: int | None = None
+    is_paused: bool = False
     is_preview: bool = False
     uptime_seconds: int | None = None
     load_avg: float | None = None
@@ -409,6 +411,8 @@ class ScheduleExclusionIn(BaseModel):
 class HeartbeatIn(BaseModel):
     state: str = "idle"
     current_media_id: str | None = None
+    # Page affichée d'un média multi-pages (PDF/Office).
+    page_index: int | None = None
     storage_free_bytes: int | None = None
     agent_version: str | None = None
     uptime_seconds: int | None = None

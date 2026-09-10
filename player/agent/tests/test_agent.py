@@ -346,3 +346,21 @@ class TestAgentLoop:
         )
         assert interval > 0
         assert received == []
+
+
+def test_pause_resume_handlers(tmp_path):
+    """Commandes pause/resume : fichier `pause` géré, purgé par un SHOW."""
+    from elyon_agent.client import Command as AgentCommand
+
+    dispatcher = make_dispatcher(data_dir=tmp_path)
+    pause_file = tmp_path / "pause"
+
+    assert dispatcher.execute(AgentCommand(id="1", type="pause", payload="{}")) is None
+    assert pause_file.exists()
+    assert dispatcher.execute(AgentCommand(id="2", type="resume", payload="{}")) is None
+    assert not pause_file.exists()
+
+    assert dispatcher.execute(AgentCommand(id="3", type="pause", payload="{}")) is None
+    show = json.dumps({"media_id": "m1", "kind": "image"})
+    assert dispatcher.execute(AgentCommand(id="4", type="show", payload=show)) is None
+    assert not pause_file.exists()

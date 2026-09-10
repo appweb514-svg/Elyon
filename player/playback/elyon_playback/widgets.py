@@ -273,9 +273,9 @@ def compose_widget_bar(
     width, height = base.size
     overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
-    base_size = max(12, height // 30)
-    pad_x = max(6, width // 150)
-    pad_y = max(4, height // 90)
+    base_size = max(12, height // 36)
+    pad_x = max(6, width // 160)
+    pad_y = max(3, height // 110)
     margin = max(8, width // 100)
     now = datetime.now()
     drawn_any = False
@@ -305,7 +305,7 @@ def compose_widget_bar(
                 draw.rounded_rectangle(
                     (0, margin, width, margin + bar_h),
                     radius=max(4, bar_h // 3),
-                    fill=(0, 0, 0, 178),
+                    fill=(0, 0, 0, 140),
                 )
                 draw.text(
                     ((width - text_w) // 2, margin + pad_y - bbox[1]),
@@ -337,7 +337,7 @@ def compose_widget_bar(
                         (height + bar_h) // 2,
                     ),
                     radius=max(4, bar_h // 3),
-                    fill=(0, 0, 0, 178),
+                    fill=(0, 0, 0, 140),
                 )
                 draw.text(
                     ((width - fw) // 2 - fb[0], (height - fh) // 2 - fb[1]),
@@ -374,7 +374,7 @@ def compose_widget_bar(
         draw.rounded_rectangle(
             (bar_x, bar_y, bar_x + bar_w, bar_y + bar_h),
             radius=max(4, bar_h // 3),
-            fill=(0, 0, 0, 178),
+            fill=(0, 0, 0, 140),
         )
         draw.text(
             (bar_x + pad_x - bbox[0], bar_y + pad_y - bbox[1]),
@@ -463,7 +463,7 @@ def _draw_weather_block(
     draw.rounded_rectangle(
         (bar_x, bar_y, bar_x + block_w, bar_y + block_h),
         radius=max(4, block_h // 4),
-        fill=(0, 0, 0, 178),
+        fill=(0, 0, 0, 140),
     )
     content_x = bar_x + max(pad_x, (block_w - content_w) // 2)
     line1_x = content_x + (content_w - line1_w) // 2
@@ -526,7 +526,7 @@ def _draw_ticker(
     pad_y = max(4, height // 90)
     bar_h = text_h + 2 * pad_y
     bar_y = height - bar_h
-    draw.rectangle((0, bar_y, width, height), fill=(0, 0, 0, 200))
+    draw.rectangle((0, bar_y, width, height), fill=(0, 0, 0, 165))
     x = ticker_x(text_w, width, now)
     draw.text((x - bbox[0], bar_y + pad_y - bbox[1]), text, font=font, fill=(255, 255, 255, 255))
     return True

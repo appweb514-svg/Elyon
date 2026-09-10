@@ -601,3 +601,43 @@ def test_video_preview_serves_original_and_thumbnail(client: TestClient):
 
     thumbnail = client.get(f"/api/media/{media_id}/thumbnail-file")
     assert thumbnail.status_code == 200
+
+
+def test_pause_and_page_index(client: TestClient):
+    """Pause back-office + suivi de la page PDF courante."""
+    _org_setup(client)
+    device = _approved_device(client, "SER-PAUSE-1")
+    headers = {"Authorization": f"Bearer {device['token']}"}
+    media = _upload_png(client, "doc.png")["id"]
+
+    heartbeat = client.post(
+        f"/api/devices/{device['device_id']}/heartbeat",
+        headers=headers,
+        json={"state": "playing", "current_media_id": media, "page_index": 3},
+    )
+    assert heartbeat.status_code == 200
+    wall = client.get("/api/admin/wall").json()
+    frame = next(item for item in wall if item["device_id"] == device["device_id"])
+    assert frame["current_page_index"] == 3
+    assert frame["is_paused"] is False
+
+    pause = auth_json(
+        client, "POST", f"/api/devices/{device['device_id']}/commands", json={"type": "pause"}
+    )
+    assert pause.status_code == 201, pause.text
+    wall = client.get("/api/admin/wall").json()
+    frame = next(item for item in wall if item["device_id"] == device["device_id"])
+    assert frame["is_paused"] is True
+
+    commands = client.get(
+        f"/api/devices/{device['device_id']}/commands", headers=headers
+    ).json()
+    assert any(command["type"] == "pause" for command in commands)
+
+    resume = auth_json(
+        client, "POST", f"/api/devices/{device['device_id']}/commands", json={"type": "resume"}
+    )
+    assert resume.status_code == 201, resume.text
+    wall = client.get("/api/admin/wall").json()
+    frame = next(item for item in wall if item["device_id"] == device["device_id"])
+    assert frame["is_paused"] is False

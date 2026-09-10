@@ -46,6 +46,7 @@ class PlayItem:
     media_id: str = ""
     name: str = ""
     url: str = ""  # page web (kind="url")
+    page_index: int = 0  # page affichée (kind="page")
 
 
 def build_queue(layout: dict[str, Any], blob_dir: Path) -> list[PlayItem]:
@@ -94,14 +95,17 @@ def build_queue(layout: dict[str, Any], blob_dir: Path) -> list[PlayItem]:
                 )
             )
         elif media["kind"] in ("pdf", "office"):
+            # Une page toutes les 5 s par défaut (surchargeable par playliste).
+            page_duration = float(entry.get("duration_seconds") or 5.0)
             for index, sha in enumerate(media.get("page_blobs", [])):
                 items.append(
                     PlayItem(
                         kind="page",
                         path=blob_dir / sha,
-                        duration_seconds=duration,
+                        duration_seconds=page_duration,
                         media_id=media["media_id"],
                         name=f"{media['name']} p.{index + 1}",
+                        page_index=index,
                     )
                 )
         else:
@@ -144,6 +148,7 @@ class PlaybackEngine:
         status_file: Path | None = None,
         ticker_tick_seconds: float = 0.5,
         play_idle_frames: bool = False,
+        pause_file: Path | None = None,
     ) -> None:
         self.renderer = renderer
         self.layout_provider = layout_provider
@@ -162,9 +167,15 @@ class PlaybackEngine:
         self.ticker_tick_seconds = ticker_tick_seconds
         self.play_idle_frames = play_idle_frames
         self._idle_frame_tick = 0.0
+        self.pause_file = pause_file
 
     def _should_stop(self) -> bool:
         return self.stop_check()
+
+    def _is_paused(self) -> bool:
+        """Gel piloté depuis le back-office (fichier `pause` du data-dir)."""
+        path = self.pause_file or (self._data_dir() / "pause")
+        return path.exists()
 
     def _publish_status(self, payload: dict[str, Any]) -> None:
         if self.status_file is not None:
@@ -248,6 +259,7 @@ class PlaybackEngine:
                 "kind": item.kind,
                 "path": str(display_path),
                 "state": "playing",
+                "page_index": item.page_index if item.kind == "page" else None,
             }
         )
         self._write_screen_frame(item, display_path)
@@ -269,9 +281,13 @@ class PlaybackEngine:
                     "kind": item.kind,
                     "path": str(display_path),
                     "state": "playing",
+                    "page_index": item.page_index if item.kind == "page" else None,
                 }
             )
             self._write_screen_frame(item, display_path)
+            if self._is_paused():
+                self.sleep_fn(self.ticker_tick_seconds)
+                continue
             step = min(self.ticker_tick_seconds, remaining)
             self.renderer.play_image(display_path, step)
             remaining -= step
@@ -406,6 +422,33 @@ class PlaybackEngine:
         else:
             self.renderer.play_image(display_path, self.show_loop_seconds)
 
+    def _hold_paused(self, item: PlayItem | None) -> PlayItem | None:
+        """Gèle l'affichage courant tant que la pause est active.
+
+        Images/pages : on réaffiche la trame (mpv ne la conserve pas après sa
+        durée). Vidéo : la lecture mpv n'est pas interruptible en cours, on se
+        contente de ne pas avancer une fois l'élément terminé.
+        """
+        if item is not None and item.kind in ("image", "page"):
+            display_path = self._display_path(item)
+            self._publish_status(
+                {
+                    "media_id": item.media_id or None,
+                    "name": item.name,
+                    "kind": item.kind,
+                    "path": str(display_path),
+                    "state": "paused",
+                    "page_index": item.page_index if item.kind == "page" else None,
+                }
+            )
+            self._write_screen_frame(item, display_path)
+            self.renderer.play_image(display_path, 1.0)
+            return item
+        media_id = (item.media_id or None) if item is not None else self.current_media_id
+        self._publish_status({"media_id": media_id, "state": "paused"})
+        self.sleep_fn(1.0)
+        return item
+
     def _play_idle_frame(self, layout: dict[str, Any] | None) -> None:
         """Écran d'attente : fond animé « Affichage en préparation » + widgets.
 
@@ -456,6 +499,7 @@ class PlaybackEngine:
         # de boucle pour que la lecture reprenne là où elle en était (et que
         # les médias « Afficher » s'insèrent dedans).
         queue: list[PlayItem] = []
+        last_item: PlayItem | None = None
         while not self._should_stop():
             touch_heartbeat(self.heartbeat_file)
             blanked = self.blank_state.blanked if self.blank_state is not None else False
@@ -470,6 +514,10 @@ class PlaybackEngine:
                 self.current_media_id = None
                 self._publish_status({"media_id": None, "state": "blank"})
                 self.sleep_fn(self.idle_wait_seconds)
+                continue
+
+            if self._is_paused():
+                last_item = self._hold_paused(last_item)
                 continue
 
             # « Afficher » en attente : le média rejoint la playliste en cours
@@ -511,7 +559,8 @@ class PlaybackEngine:
                     self.sleep_fn(self.idle_wait_seconds)
                     continue
 
-            self.play_item(queue.pop(0))
+            last_item = queue.pop(0)
+            self.play_item(last_item)
 
 
 def _select_renderer(data_dir: Path) -> Renderer:

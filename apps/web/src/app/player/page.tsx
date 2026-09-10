@@ -18,7 +18,8 @@ type ManifestMedia = {
   media_id: string;
   name: string;
   kind: string;
-  sha256: string;
+  sha256?: string | null;
+  page_files?: Array<{ index?: number }> | null;
 };
 type ManifestEntry = {
   media_id: string;
@@ -42,12 +43,25 @@ type QueueItem = {
   name: string;
   duration: number | null;
   url?: string | null;
+  page_index?: number | null;
+};
+type WeatherInfo = {
+  city?: string | null;
+  temperature?: number | null;
+  code?: number | null;
+  forecast?: Array<{
+    date?: string;
+    max?: number | null;
+    min?: number | null;
+    code?: number | null;
+  }>;
 };
 type WidgetFeed = {
   ticker_text: string | null;
   ticker_speed: string | null;
   weather_text: string | null;
   weather_days: string | null;
+  weather?: WeatherInfo | null;
 };
 
 function load(): Stored | null {
@@ -116,12 +130,17 @@ export default function PlayerPage() {
     }
   }
 
-  async function heartbeat(s: Stored, playerState: string, mediaId: string | null): Promise<boolean> {
+  async function heartbeat(
+    s: Stored,
+    playerState: string,
+    mediaId: string | null,
+    pageIndex: number | null = null
+  ): Promise<boolean> {
     try {
       const res = await fetch(`/api/devices/${s.device_id}/heartbeat`, {
         method: "POST",
         headers: { Authorization: `Bearer ${s.token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ state: playerState, current_media_id: mediaId }),
+        body: JSON.stringify({ state: playerState, current_media_id: mediaId, page_index: pageIndex }),
       });
       return res.ok;
     } catch {
@@ -134,6 +153,9 @@ export default function PlayerPage() {
       let alive = true;
       // Commande « Afficher » en cours (ref pour éviter le narrowing TS).
       const showRef = { current: null as QueueItem | null };
+      // Pause pilotée depuis le back-office + vidéo en cours (pour la figer).
+      const pausedRef = { current: false };
+      const videoRef = { current: null as HTMLVideoElement | null };
       const fetchManifest = async (): Promise<Manifest | null> => {
         try {
           const res = await fetch(`/api/devices/${s.device_id}/manifest`, {
@@ -190,6 +212,12 @@ export default function PlayerPage() {
               }
             } else if (command.type === "stop_show") {
               showRef.current = null;
+            } else if (command.type === "pause") {
+              pausedRef.current = true;
+              videoRef.current?.pause();
+            } else if (command.type === "resume") {
+              pausedRef.current = false;
+              void videoRef.current?.play().catch(() => undefined);
             } else if (command.type === "resync") {
               // Rien à faire : la boucle relit le manifeste juste après.
             } else if (command.type === "reboot") {
@@ -208,33 +236,63 @@ export default function PlayerPage() {
 
       // Boucle : commandes → manifeste → lecture → heartbeat.
       const loop = async () => {
+        let currentItem: QueueItem | null = null;
         for (;;) {
           if (!alive) return;
           await checkCommands();
+          if (pausedRef.current) {
+            await heartbeat(
+              s,
+              "paused",
+              currentItem?.media_id ?? showRef.current?.media_id ?? null,
+              currentItem?.page_index ?? null
+            );
+            await sleep(1_000);
+            continue;
+          }
           if (showRef.current) {
             const item = showRef.current;
+            currentItem = item;
             setStatus(`lecture ${item.name}`);
-            await heartbeat(s, "playing", item.media_id);
+            await heartbeat(s, "playing", item.media_id, item.page_index ?? null);
             if (item.duration != null) showRef.current = null;
             if (item.kind === "web") {
-              await playWeb(item.url ?? "", item.duration ?? 60, () => alive);
+              await playWeb(item.url ?? "", item.duration ?? 60, () => alive, () => pausedRef.current);
             } else {
-              await playItem(s, item, () => alive);
+              await playItem(s, item, () => alive, () => pausedRef.current, (video) => {
+                videoRef.current = video;
+              });
             }
             continue;
           }
           const m = await fetchManifest();
           const items: QueueItem[] = [];
+          const mediaIndex = new Map((m?.media ?? []).map((media) => [media.media_id, media]));
           if (m && m.blocks?.length) {
             const blocks = [...m.blocks].sort((a, b) => b.priority - a.priority);
             for (const entry of blocks[0]?.entries ?? []) {
-              items.push({
-                media_id: entry.media_id,
-                kind: entry.kind,
-                name: entry.name,
-                duration: entry.duration_seconds ?? null,
-                url: entry.url ?? null,
-              });
+              const pages = mediaIndex.get(entry.media_id)?.page_files?.length ?? 1;
+              if ((entry.kind === "pdf" || entry.kind === "office") && pages > 1) {
+                // Un PDF/Office se déroule page par page (5 s par défaut).
+                for (let page = 0; page < pages; page++) {
+                  items.push({
+                    media_id: entry.media_id,
+                    kind: "page",
+                    name: `${entry.name} p.${page + 1}`,
+                    duration: entry.duration_seconds ?? null,
+                    url: null,
+                    page_index: page,
+                  });
+                }
+              } else {
+                items.push({
+                  media_id: entry.media_id,
+                  kind: entry.kind,
+                  name: entry.name,
+                  duration: entry.duration_seconds ?? null,
+                  url: entry.url ?? null,
+                });
+              }
             }
           }
           setManifest(m);
@@ -254,11 +312,14 @@ export default function PlayerPage() {
           // Lecture séquentielle (boucle infinie du bloc actif).
           for (let i = 0; i < items.length && alive; i++) {
             await checkCommands();
-            if (showRef.current) break; // la boucle externe affiche le média
+            if (pausedRef.current || showRef.current) break;
             const item = items[i];
+            currentItem = item;
             setStatus(`lecture ${item.name}`);
-            await heartbeat(s, "playing", item.media_id);
-            await playItem(s, item, () => alive);
+            await heartbeat(s, "playing", item.media_id, item.page_index ?? null);
+            await playItem(s, item, () => alive, () => pausedRef.current, (video) => {
+              videoRef.current = video;
+            });
           }
         }
       };
@@ -292,6 +353,10 @@ export default function PlayerPage() {
   const idleWeatherText = idleWeather
     ? feed?.weather_text ?? `${String(((idleWeather.params ?? {}) as Record<string, unknown>)?.city ?? "Météo")}`
     : null;
+  const idleWeatherLine = feed?.weather
+    ? `${weatherGlyph(feed.weather.code)} ${feed.weather.city ?? "Météo"} · ${Math.round(feed.weather.temperature ?? 0)}°C`
+    : idleWeatherText;
+  const idleWeatherDays = weatherDaysText(feed?.weather) ?? feed?.weather_days ?? null;
 
   return (
     <div className="fixed inset-0 bg-black text-white" style={{ overflow: "hidden" }}>
@@ -308,13 +373,13 @@ export default function PlayerPage() {
           <span className="elyon-idle-orb bottom-[10%] left-[45%] h-32 w-32 bg-cyan-400" style={{ animationDelay: "6s" }} />
           {idleWeatherText && (
             <div
-              className="absolute left-0 right-0 top-0 z-10 rounded-b-lg bg-black/60 text-center font-medium"
-              style={{ ...widgetFont(idleWeather, 14, 160), padding: "1vh 1.5vw" }}
+              className="absolute left-0 right-0 top-0 z-10 rounded-b-lg bg-black/45 text-center font-medium"
+              style={{ ...widgetFont(idleWeather, 14, 160), padding: "0.7vh 1vw" }}
             >
-              {idleWeatherText}
-              {feed?.weather_days && (
-                <span className="block text-slate-300" style={{ fontSize: "0.58em" }}>
-                  {feed.weather_days}
+              {idleWeatherLine}
+              {idleWeatherDays && (
+                <span className="block text-slate-300" style={{ fontSize: "0.55em" }}>
+                  {idleWeatherDays}
                 </span>
               )}
             </div>
@@ -322,8 +387,8 @@ export default function PlayerPage() {
           <ClockWidget
             widget={idleClock}
             siteTimezone={siteTimezone}
-            className="absolute right-[1.5vw] top-[9vh] z-10 rounded-lg bg-black/60 font-semibold"
-            style={{ ...widgetFont(idleClock, 16, 180), padding: "1vh 1.2vw" }}
+            className="absolute right-[1.5vw] top-[9vh] z-10 rounded-lg bg-black/45 font-semibold"
+            style={{ ...widgetFont(idleClock, 16, 180), padding: "0.7vh 1vw" }}
           />
           <span
             className="elyon-idle-text font-semibold tracking-wide"
@@ -333,8 +398,8 @@ export default function PlayerPage() {
           </span>
           {idleTicker && (
             <div
-              className="absolute bottom-0 left-0 right-0 overflow-hidden bg-black/70 whitespace-nowrap"
-              style={{ ...widgetFont(ticker, 12, 140), padding: "1vh 1.5vw" }}
+              className="absolute bottom-0 left-0 right-0 overflow-hidden bg-black/55 whitespace-nowrap"
+              style={{ ...widgetFont(ticker, 12, 140), padding: "0.7vh 1vw" }}
             >
               <span
                 className={`elyon-ticker inline-block ${(tickerSpeed(ticker) || feed?.ticker_speed || "normal") !== "normal" ? `elyon-ticker-${tickerSpeed(ticker) || feed?.ticker_speed}` : ""}`}
@@ -407,21 +472,77 @@ async function ackCommand(s: Stored, commandId: string, error: string | null): P
   }
 }
 
-/** Affiche une page web dans le kiosque pendant `seconds`. */
-async function playWeb(target: string, seconds: number, alive: () => boolean): Promise<void> {
-  if (!target || !alive()) return;
-  await new Promise<void>((resolve) => {
-    const iframe = document.createElement("iframe");
-    iframe.src = target;
-    iframe.title = target;
-    iframe.className = "absolute inset-0 h-full w-full border-0 bg-white";
-    const root = document.getElementById("kiosk-root");
-    if (root) {
-      root.innerHTML = "";
-      root.appendChild(iframe);
+/** Attente qui se gèle tant que la pause est active (250 ms par pas). */
+async function waitWithPause(
+  seconds: number,
+  paused: () => boolean,
+  alive: () => boolean
+): Promise<void> {
+  let remaining = Math.max(1, seconds) * 1000;
+  while (remaining > 0 && alive()) {
+    if (paused()) {
+      await sleep(200);
+      continue;
     }
-    setTimeout(resolve, Math.max(1, seconds) * 1000);
-  });
+    const step = Math.min(250, remaining);
+    await sleep(step);
+    remaining -= step;
+  }
+}
+
+/** Affiche une page web dans le kiosque pendant `seconds`. */
+async function playWeb(
+  target: string,
+  seconds: number,
+  alive: () => boolean,
+  paused: () => boolean
+): Promise<void> {
+  if (!target || !alive()) return;
+  const iframe = document.createElement("iframe");
+  iframe.src = target;
+  iframe.title = target;
+  iframe.className = "absolute inset-0 h-full w-full border-0 bg-white";
+  const root = document.getElementById("kiosk-root");
+  if (root) {
+    root.innerHTML = "";
+    root.appendChild(iframe);
+  }
+  await waitWithPause(seconds, paused, alive);
+}
+
+const FR_DAYS = ["lun", "mar", "mer", "jeu", "ven", "sam", "dim"];
+
+/** Code WMO → glyphe météo (mêmes glyphes que l'aperçu serveur). */
+function weatherGlyph(code?: number | null): string {
+  if (code == null) return "\u2601";
+  const value = Number(code);
+  if (value === 0) return "\u2600";
+  if (value <= 3) return "\u2601";
+  if (value === 45 || value === 48) return "\u2630";
+  if ((value >= 51 && value <= 67) || (value >= 80 && value <= 82)) return "\u2614";
+  if ((value >= 71 && value <= 77) || value === 85 || value === 86) return "\u2744";
+  if (value >= 95) return "\u26a1";
+  return "\u2601";
+}
+
+function dayLabel(dateStr: string | undefined, index: number): string {
+  if (!dateStr) return FR_DAYS[index % 7];
+  const date = new Date(`${dateStr.slice(0, 10)}T12:00:00`);
+  return Number.isNaN(date.getTime()) ? FR_DAYS[index % 7] : FR_DAYS[(date.getDay() + 6) % 7];
+}
+
+/** Ligne de prévision avec icône par jour (ex. « sun mar 21°/12° »). */
+function weatherDaysText(info: WeatherInfo | null | undefined): string | null {
+  const days = (info?.forecast ?? [])
+    .filter((f) => typeof f.max === "number" && typeof f.min === "number")
+    .slice(0, 4);
+  if (days.length === 0) return null;
+  return days
+    .map(
+      (f, index) =>
+        `${weatherGlyph(f.code)} ${dayLabel(f.date, index)} ${Math.round(f.max!)}°/${Math.round(f.min!)}°`
+    )
+    .join("  ");
 }
 
 /** Facteur de taille (identique au player Python : petit/moyen/grand). */
@@ -439,7 +560,7 @@ function widgetFont(
   min: number,
   max: number
 ): CSSProperties {
-  const vh = ((100 / 30) * widgetScale(widget)).toFixed(2);
+  const vh = ((100 / 36) * widgetScale(widget)).toFixed(2);
   return { fontSize: `clamp(${min}px, ${vh}vh, ${max}px)` };
 }
 
@@ -455,10 +576,36 @@ function tickerSpeed(w: Record<string, unknown> | undefined): string {
   return String(p.speed ?? "normal");
 }
 
-/** Lecture d'un item : vidéo native, image ou page web (iframe). */
-async function playItem(s: Stored, item: QueueItem, alive: () => boolean): Promise<void> {
+/** Lecture d'un item : vidéo, image, page PDF/Office ou page web (iframe). */
+async function playItem(
+  s: Stored,
+  item: QueueItem,
+  alive: () => boolean,
+  paused: () => boolean,
+  onVideo?: (video: HTMLVideoElement | null) => void
+): Promise<void> {
   if (item.kind === "web") {
-    await playWeb(item.url ?? "", item.duration ?? 30, alive);
+    await playWeb(item.url ?? "", item.duration ?? 30, alive, paused);
+    return;
+  }
+  if (item.kind === "page" || item.kind === "pdf" || item.kind === "office") {
+    // Page d'un PDF/Office : une page toutes les 5 s (surchargeable).
+    const pageIndex = item.page_index ?? 0;
+    const pageUrl = `/api/media/${item.media_id}/pages/${pageIndex}/device-file?token=${encodeURIComponent(s.token)}`;
+    await new Promise<void>((resolve) => {
+      const img = new Image();
+      img.className = "absolute inset-0 h-full w-full object-contain";
+      img.onload = () => {
+        const root = document.getElementById("kiosk-root");
+        if (root) {
+          root.innerHTML = "";
+          root.appendChild(img);
+        }
+        void waitWithPause(item.duration ?? 5, paused, alive).then(resolve);
+      };
+      img.onerror = () => setTimeout(resolve, 2_000);
+      img.src = pageUrl;
+    });
     return;
   }
   const url = deviceFileUrl(s.device_id, item.media_id, s.token);
@@ -468,12 +615,19 @@ async function playItem(s: Stored, item: QueueItem, alive: () => boolean): Promi
       video.src = url;
       video.className = "absolute inset-0 h-full w-full object-contain";
       video.autoplay = true;
-      video.onended = () => resolve();
-      video.onerror = () => resolve();
+      video.onended = () => {
+        onVideo?.(null);
+        resolve();
+      };
+      video.onerror = () => {
+        onVideo?.(null);
+        resolve();
+      };
       const root = document.getElementById("kiosk-root");
       if (!root) return resolve();
       root.innerHTML = "";
       root.appendChild(video);
+      onVideo?.(video);
       video.play().catch(() => resolve());
     });
     return;
@@ -487,7 +641,7 @@ async function playItem(s: Stored, item: QueueItem, alive: () => boolean): Promi
         root.innerHTML = "";
         root.appendChild(img);
       }
-      setTimeout(resolve, (item.duration ?? 10) * 1000);
+      void waitWithPause(item.duration ?? 10, paused, alive).then(resolve);
     };
     img.onerror = () => setTimeout(resolve, 2_000);
     img.src = url;
@@ -579,9 +733,12 @@ function KioskScreen({
   const tickerVal =
     ticker && String(ticker.type) === "rss" ? feed?.ticker_text ?? "" : tickerText(ticker);
   const weatherText = weather
-    ? feed?.weather_text ??
-      `${String(((weather.params ?? {}) as Record<string, unknown>)?.city ?? "Météo")}`
+    ? feed?.weather
+      ? `${weatherGlyph(feed.weather.code)} ${feed.weather.city ?? "Météo"} · ${Math.round(feed.weather.temperature ?? 0)}°C`
+      : feed?.weather_text ??
+        `${String(((weather.params ?? {}) as Record<string, unknown>)?.city ?? "Météo")}`
     : null;
+  const weatherDays = weatherDaysText(feed?.weather) ?? feed?.weather_days ?? null;
 
   return (
     <div className="absolute inset-0" id="kiosk-root-wrap">
@@ -601,13 +758,13 @@ function KioskScreen({
       )}
       {weatherText && (
         <div
-          className="absolute left-0 right-0 top-0 z-10 rounded-b-lg bg-black/60 text-center font-medium"
-          style={{ ...widgetFont(weather, 14, 160), padding: "1vh 1.5vw" }}
+          className="absolute left-0 right-0 top-0 z-10 rounded-b-lg bg-black/45 text-center font-medium"
+          style={{ ...widgetFont(weather, 14, 160), padding: "0.7vh 1vw" }}
         >
           {weatherText}
-          {feed?.weather_days && (
-            <span className="block text-slate-300" style={{ fontSize: "0.58em" }}>
-              {feed.weather_days}
+          {weatherDays && (
+            <span className="block text-slate-300" style={{ fontSize: "0.55em" }}>
+              {weatherDays}
             </span>
           )}
         </div>
@@ -615,17 +772,17 @@ function KioskScreen({
       <ClockWidget
         widget={clockWidget}
         siteTimezone={siteTimezone}
-        className={`absolute right-[1.5vw] z-10 rounded-lg bg-black/60 font-semibold ${
+        className={`absolute right-[1.5vw] z-10 rounded-lg bg-black/45 font-semibold ${
           hasWeatherBand ? "top-[9vh]" : "top-[2vh]"
         }`}
-        style={{ ...widgetFont(clockWidget, 16, 180), padding: "1vh 1.2vw" }}
+        style={{ ...widgetFont(clockWidget, 16, 180), padding: "0.7vh 1vw" }}
       />
       {centerText && (
         <div
-          className="absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 rounded-xl bg-black/70 text-center font-semibold"
+          className="absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 rounded-xl bg-black/45 text-center font-semibold"
           style={{
             ...widgetFont(center, 14, 160),
-            padding: "1.5vh 2vw",
+            padding: "1vh 1.4vw",
             maxWidth: "92vw",
           }}
         >
@@ -634,8 +791,8 @@ function KioskScreen({
       )}
       {tickerVal && (
         <div
-          className="absolute bottom-0 left-0 right-0 z-10 overflow-hidden bg-black/70 whitespace-nowrap"
-          style={{ ...widgetFont(ticker, 12, 140), padding: "1vh 1.5vw" }}
+          className="absolute bottom-0 left-0 right-0 z-10 overflow-hidden bg-black/55 whitespace-nowrap"
+          style={{ ...widgetFont(ticker, 12, 140), padding: "0.7vh 1vw" }}
         >
           <span className={`elyon-ticker inline-block ${tickerSpeed(ticker) !== "normal" ? `elyon-ticker-${tickerSpeed(ticker)}` : ""}`}>
             {tickerVal}

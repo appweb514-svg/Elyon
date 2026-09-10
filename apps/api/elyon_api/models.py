@@ -101,6 +101,8 @@ class CommandType(enum.StrEnum):
     SHOW = "show"
     STOP_SHOW = "stop_show"
     NETWORK = "network"
+    PAUSE = "pause"
+    RESUME = "resume"
 
 
 class EventLevel(enum.StrEnum):
@@ -225,6 +227,10 @@ class Device(Base):
     queue_stop_until: Mapped[dt.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Page courante d'un média multi-pages (PDF/Office) affichée par le player.
+    current_page_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Gel de l'affichage piloté depuis le back-office (bouton Pause).
+    is_paused: Mapped[bool] = mapped_column(Boolean, default=False)
     # Configuration réseau cible (appliquée par l'agent via commande NETWORK).
     network_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_preview: Mapped[bool] = mapped_column(Boolean, default=False)

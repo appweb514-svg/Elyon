@@ -197,6 +197,7 @@ def make_show_handler(
         }
         if payload.get("duration_seconds") is not None:
             spec["duration_seconds"] = payload["duration_seconds"]
+        (data_dir / "pause").unlink(missing_ok=True)
         (show_dir / "request.json").write_text(
             json.dumps(spec),
             encoding="utf-8",
@@ -247,19 +248,27 @@ def agent_loop_once(
     """
     playing = read_now_playing(settings.data_dir)
     blanked = (settings.data_dir / "blank").exists()
+    paused = (settings.data_dir / "pause").exists()
     if blanked:
         player_state = "blank"
+    elif paused:
+        player_state = "paused"
     elif playing.get("media_id"):
         player_state = "playing"
     else:
         player_state = "idle"
     media_id = playing.get("media_id")
     current_media_id = media_id if isinstance(media_id, str) else None
+    page_index = playing.get("page_index")
+    current_page_index = (
+        page_index if isinstance(page_index, int) and page_index >= 0 else None
+    )
     telemetry = system_telemetry(settings.data_dir)
     heartbeat = client.heartbeat(
         state,
         player_state=player_state,
         current_media_id=current_media_id,
+        page_index=current_page_index,
         agent_version=settings.agent_version,
         **telemetry,
     )

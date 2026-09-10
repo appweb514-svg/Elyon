@@ -942,3 +942,25 @@ def test_build_queue_includes_web_item(tmp_path):
     assert items[0].kind == "url"
     assert items[0].url == "https://elyon.int.labvirtuel.fr/media"
     assert items[0].duration_seconds == 45.0
+
+
+def test_build_queue_pages_default_five_seconds(tmp_path):
+    """Un PDF multi-pages défile page par page, 5 s par défaut."""
+    layout = {
+        "blocks": [
+            {"schedule_id": "s1", "priority": 1, "entries": [{"media_id": "p1"}]}
+        ],
+        "media": [
+            {
+                "media_id": "p1",
+                "name": "Rapport",
+                "kind": "pdf",
+                "main_blob": "main",
+                "page_blobs": ["page1", "page2", "page3"],
+            }
+        ],
+    }
+    items = build_queue(layout, tmp_path)
+    assert [item.kind for item in items] == ["page", "page", "page"]
+    assert [item.page_index for item in items] == [0, 1, 2]
+    assert all(item.duration_seconds == 5.0 for item in items)

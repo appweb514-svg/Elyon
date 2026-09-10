@@ -75,6 +75,8 @@ type WallFrame = {
   current_media_name: string | null;
   current_media_kind: string | null;
   current_media_url?: string | null;
+  current_page_index?: number | null;
+  is_paused?: boolean;
   screen_width?: number | null;
   screen_height?: number | null;
   ticker_text?: string | null;
@@ -395,6 +397,19 @@ export default function DeviceDetailPage() {
     try {
       await api.post(`/api/devices/${deviceId}/queue/next`, {});
       setNotice("Média suivant lancé.");
+      await refreshAll();
+    } catch (err) {
+      setError(String((err as Error).message ?? err));
+    }
+  }
+
+  async function togglePause() {
+    const paused = wall?.is_paused === true || wall?.player_state === "paused";
+    try {
+      await api.post(`/api/devices/${deviceId}/commands`, {
+        type: paused ? "resume" : "pause",
+      });
+      setNotice(paused ? "Diffusion reprise." : "Image figée (pause).");
       await refreshAll();
     } catch (err) {
       setError(String((err as Error).message ?? err));
@@ -730,6 +745,7 @@ export default function DeviceDetailPage() {
 
   const shown = device?.computed_status ?? device?.status ?? "";
   const isShowingDirect = wall?.player_state === "playing" && Boolean(wall?.current_media_id);
+  const isPaused = wall?.is_paused === true || wall?.player_state === "paused";
 
   if (error && !device) {
     return (
@@ -842,10 +858,22 @@ export default function DeviceDetailPage() {
               </TvFrame>
               <div className="mx-auto mt-4 w-full max-w-3xl space-y-2">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-sm font-semibold">File de diffusion</p>
+                  <p className="flex items-center gap-2 text-sm font-semibold">
+                    File de diffusion
+                    {isPaused && <Badge variant="warning">En pause</Badge>}
+                  </p>
                   <div className="flex flex-wrap gap-2">
                     <Button size="sm" variant="outline" onClick={() => queuePlay()} disabled={queue.length === 0}>
                       ▶ Reprendre
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={isPaused ? "default" : "outline"}
+                      onClick={() => void togglePause()}
+                      disabled={!isShowingDirect && !isPaused}
+                      title={isPaused ? "Reprendre la diffusion" : "Figer l'image affichée"}
+                    >
+                      {isPaused ? "▶ Reprendre" : "⏸ Pause"}
                     </Button>
                     <Button size="sm" variant="outline" onClick={queueNext} disabled={queue.length < 2}>
                       ⏭ Suivant

@@ -97,6 +97,7 @@ async def trigger_show(
         stale.status = CommandStatus.FAILED
         stale.error = "Remplacé par un trigger"
 
+    device.is_paused = False
     cmd = Command(
         device_id=device.id,
         type=CommandType.SHOW,
@@ -161,6 +162,7 @@ async def trigger_playlist(
         stale.status = CommandStatus.FAILED
         stale.error = "Remplacé par un trigger"
 
+    device.is_paused = False
     cmd = Command(device_id=device.id, type=CommandType.SHOW, payload=json.dumps(payload))
     db.add(cmd)
     db.commit()
