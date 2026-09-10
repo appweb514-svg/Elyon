@@ -1,5 +1,6 @@
 services:
   db:
+    restart: unless-stopped
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: ${ELYON_POSTGRES_USER:-elyon}
@@ -14,6 +15,7 @@ services:
       retries: 10
 
   redis:
+    restart: unless-stopped
     image: redis:7-alpine
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -28,6 +30,7 @@ services:
       - lab-enroll:/lab-enroll
 
   api:
+    restart: unless-stopped
     build: ./apps/api
     environment:
       ELYON_DATABASE_URL: ${ELYON_DATABASE_URL:-postgresql://elyon:CHANGE_ME@db:5432/elyon}
@@ -73,6 +76,7 @@ services:
       retries: 20
 
   worker:
+    restart: unless-stopped
     build:
       context: ./apps/api
       dockerfile: ../worker/Dockerfile
@@ -92,6 +96,7 @@ services:
         condition: service_healthy
 
   web:
+    restart: unless-stopped
     build: ./apps/web
     environment:
       ELYON_API_URL: http://api:8000
