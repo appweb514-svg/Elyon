@@ -199,8 +199,8 @@ export default function DeviceDetailPage() {
   const [layout, setLayout] = useState<ScreenLayout | null>(null);
   const [savingLayout, setSavingLayout] = useState(false);
   const [widgets, setWidgets] = useState<Widget[]>([]);
-  const [savedWidgets, setSavedWidgets] = useState<Widget[]>([]);
   const [savingWidgets, setSavingWidgets] = useState(false);
+  const widgetSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [widgetOpenId, setWidgetOpenId] = useState<string | null>(null);
   // Gel du rechargement pendant l'édition (widgets OU disposition) : la ref
   // est lue à l'intérieur du callback, sans dépendre des closures du timer.
@@ -233,7 +233,6 @@ export default function DeviceDetailPage() {
             if (!editingRef.current) {
               setLayout(found.layout ?? null);
               setWidgets((found.widgets ?? []) as Widget[]);
-              setSavedWidgets((found.widgets ?? []) as Widget[]);
             }
             break;
           }
@@ -684,31 +683,34 @@ export default function DeviceDetailPage() {
     }
   }
 
-  const widgetsChanged = JSON.stringify(widgets) !== JSON.stringify(savedWidgets);
-
-  async function saveWidgets() {
-    if (!device?.screen_id) return;
-    setSavingWidgets(true);
-    try {
-      await api.patch(`/api/screens/${device.screen_id}`, {
-        widgets: widgets.map((w) => ({
-          type: w.type,
-          position: w.position,
-          visible: w.visible,
-          params: w.params,
-        })),
-      });
-      setSavedWidgets(widgets);
-      setWidgetOpenId(null);
-      await publish();
-      setNotice("Widgets enregistrés et affichés sur l'écran.");
-      await reload();
-    } catch (err) {
-      setError(String((err as Error).message ?? err));
-    } finally {
-      setSavingWidgets(false);
-    }
-  }
+  const saveWidgetsLive = useCallback(
+    (nextWidgets: Widget[]) => {
+      if (!device?.screen_id) return;
+      if (widgetSaveTimer.current) clearTimeout(widgetSaveTimer.current);
+      setSavingWidgets(true);
+      widgetSaveTimer.current = setTimeout(() => {
+        void (async () => {
+          try {
+            await api.patch(`/api/screens/${device.screen_id}`, {
+              widgets: nextWidgets.map((w) => ({
+                type: w.type,
+                position: w.position,
+                visible: w.visible,
+                params: w.params,
+              })),
+            });
+            await api.post(`/api/devices/${deviceId}/publish`);
+            setNotice("Widgets mis à jour sur l'écran.");
+          } catch (err) {
+            setError(String((err as Error).message ?? err));
+          } finally {
+            setSavingWidgets(false);
+          }
+        })();
+      }, 350);
+    },
+    [device?.screen_id, deviceId]
+  );
 
   // Seuls les contenus qui jouent réellement sur CET écran : programmations
   // ciblées sur l'appareil + programmations « tout le site » (device_id nul).
@@ -1037,11 +1039,19 @@ export default function DeviceDetailPage() {
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <WidgetBar widgets={widgets} onChange={setWidgets} openId={widgetOpenId} onOpenChange={setWidgetOpenId} />
-                {widgetsChanged && (
-                  <Button className="mt-3 w-full" onClick={saveWidgets} disabled={savingWidgets || !device.screen_id}>
-                    {savingWidgets ? "Envoi…" : "Enregistrer et afficher sur l'écran"}
-                  </Button>
+                <WidgetBar
+                  widgets={widgets}
+                  onChange={(next) => {
+                    setWidgets(next);
+                    saveWidgetsLive(next);
+                  }}
+                  openId={widgetOpenId}
+                  onOpenChange={setWidgetOpenId}
+                />
+                {savingWidgets && (
+                  <p className="mt-2 text-xs text-muted-foreground" aria-live="polite">
+                    Mise à jour de l&apos;écran…
+                  </p>
                 )}
               </CardContent>
             </Card>

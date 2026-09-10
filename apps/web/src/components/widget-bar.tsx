@@ -139,54 +139,6 @@ export function WidgetBar({
     onChange(next);
   }
 
-  // --- Barres d'information (haut : météo + heure, bas : RSS/texte déroulant) ---
-
-  function findBar(type: string): Widget | undefined {
-    return widgets.find((w) => w.type === type && w.visible);
-  }
-
-  const topBarEnabled = findBar("weather") !== undefined || findBar("clock") !== undefined;
-  const bottomBarEnabled = findBar("rss") !== undefined || findBar("ticker") !== undefined;
-  const atLimit = widgets.length >= MAX_WIDGETS;
-
-  /** Active/désactive une barre en conservant les paramètres des widgets. */
-  function upsertBar(types: string[], defaults: Widget[], enable: boolean) {
-    const existing = widgets.filter((w) => types.includes(w.type));
-    if (existing.length > 0) {
-      // Les widgets restent dans la liste (masqués) : ville, format, texte…
-      // ne sont pas perdus quand on éteint puis rallume la barre.
-      onChange(
-        widgets.map((w) => (types.includes(w.type) ? { ...w, visible: enable } : w))
-      );
-      return;
-    }
-    if (!enable) return;
-    const missing = defaults.filter((d) => !widgets.some((w) => w.type === d.type));
-    if (widgets.length + missing.length > MAX_WIDGETS) return;
-    onChange([...widgets, ...missing]);
-  }
-
-  function toggleTopBar(enable: boolean) {
-    upsertBar(
-      ["weather", "clock"],
-      [
-        { type: "weather", position: "top-band", locked: true, visible: true, params: defaultParams("weather") },
-        { type: "clock", position: "top-right", locked: true, visible: true, params: defaultParams("clock") },
-      ],
-      enable
-    );
-  }
-
-  function toggleBottomBar(enable: boolean) {
-    upsertBar(
-      ["rss", "ticker"],
-      [
-        { type: "rss", position: "bottom-ticker", locked: true, visible: true, params: defaultParams("rss") },
-      ],
-      enable
-    );
-  }
-
   async function previewWeather(index: number, city: string) {
     const key = `w${index}`;
     setLoading(key);
@@ -319,32 +271,6 @@ export function WidgetBar({
     );
   }
 
-  function renderBarToggles() {
-    return (
-      <div className="flex flex-wrap gap-2">
-        <button
-          type="button"
-          role="switch"
-          aria-checked={topBarEnabled}
-          data-testid="top-bar-toggle"
-          onClick={() => toggleTopBar(!topBarEnabled)}
-          className={`rounded-md border px-3 py-1.5 text-xs font-medium transition ${topBarEnabled ? "border-primary bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted/60"}`}
-        >
-          Bandeau du haut : météo + horloge {topBarEnabled ? "✓" : ""}
-        </button>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={bottomBarEnabled}
-          data-testid="bottom-bar-toggle"
-          onClick={() => toggleBottomBar(!bottomBarEnabled)}
-          className={`rounded-md border px-3 py-1.5 text-xs font-medium transition ${bottomBarEnabled ? "border-primary bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted/60"}`}
-        >
-          Bandeau du bas : flux RSS défilant {bottomBarEnabled ? "✓" : ""}
-        </button>
-      </div>
-    );
-  }
 
   return (
     <div className="space-y-3">
@@ -358,8 +284,7 @@ export function WidgetBar({
               variant="outline"
               size="sm"
               onClick={() => add(type)}
-              title={atLimit ? "Maximum de 3 widgets atteint" : meta.hint}
-              disabled={atLimit}
+              title={meta.hint}
             >
               <Icon /> {meta.label}
             </Button>
@@ -370,8 +295,6 @@ export function WidgetBar({
           {widgets.length}/{MAX_WIDGETS} widgets).
         </span>
       </div>
-
-      {renderBarToggles()}
 
       <ul className="space-y-2">
         {widgets.map((w, i) => {
