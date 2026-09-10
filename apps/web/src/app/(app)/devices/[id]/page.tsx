@@ -865,8 +865,14 @@ export default function DeviceDetailPage() {
                     {isPaused && <Badge variant="warning">En pause</Badge>}
                   </p>
                   <div className="flex flex-wrap gap-2">
-                    <Button size="sm" variant="outline" onClick={() => queuePlay()} disabled={queue.length === 0}>
-                      ▶ Reprendre
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void queuePlay()}
+                      disabled={queue.length === 0}
+                      title="Lire le premier média de la file"
+                    >
+                      ▶ Lire la file
                     </Button>
                     <Button
                       size="sm"
@@ -942,13 +948,11 @@ export default function DeviceDetailPage() {
                     onChange={(e) => setQueueMediaId(e.target.value)}
                   >
                     <option value="">Ajouter un média à la file…</option>
-                    {mediaList
-                      .filter((m) => !device?.org_id || m.org_id === device.org_id)
-                      .map((m) => (
-                        <option key={m.id} value={m.id}>
-                          {m.name}
-                        </option>
-                      ))}
+                    {mediaList.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name} ({m.kind})
+                      </option>
+                    ))}
                   </Select>
                   <Button size="sm" onClick={queueAdd} disabled={!queueMediaId}>
                     Ajouter
