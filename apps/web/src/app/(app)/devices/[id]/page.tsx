@@ -66,6 +66,7 @@ type QueueItem = {
   name: string;
   kind: string;
   playing: boolean;
+  paused?: boolean;
 };
 
 type WallFrame = {
@@ -826,7 +827,7 @@ export default function DeviceDetailPage() {
                 {/* Flux MJPEG : le navigateur met à jour l'image tout seul,
                     comme un vrai retour vidéo. La clé force la reconnexion
                     quand le média affiché change. */}
-                {wall?.player_state !== "playing" && wall?.player_state !== "blank" ? (
+                {wall?.player_state !== "playing" && wall?.player_state !== "blank" && wall?.player_state !== "paused" ? (
                   <div className="elyon-idle absolute inset-0 flex flex-col items-center justify-center gap-3 overflow-hidden">
                     <span className="elyon-idle-orb left-[8%] top-[15%] h-24 w-24 bg-sky-500" />
                     <span className="elyon-idle-orb right-[10%] top-[55%] h-32 w-32 bg-indigo-500" style={{ animationDelay: "3s" }} />
@@ -921,15 +922,28 @@ export default function DeviceDetailPage() {
                             <td className="px-3 py-2">
                               {item.playing ? (
                                 <Badge variant="success">En lecture</Badge>
+                              ) : item.paused ? (
+                                <Badge variant="warning">En pause</Badge>
                               ) : (
                                 <Badge variant="secondary">En attente</Badge>
                               )}
                             </td>
                             <td className="px-3 py-2">
                               <div className="flex justify-end gap-1">
-                                {!item.playing && (
+                                {(item.playing || item.paused) && (
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    onClick={() => void togglePause()}
+                                    title={item.paused ? "Reprendre ce média" : "Mettre ce média en pause"}
+                                    aria-label={item.paused ? "Reprendre ce média" : "Mettre ce média en pause"}
+                                  >
+                                    {item.paused ? <Play /> : <Pause />}
+                                  </Button>
+                                )}
+                                {!item.playing && !item.paused && (
                                   <Button size="sm" variant="ghost" onClick={() => queuePlay(item.media_id)} title="Lire ce média">
-                                    ▶
+                                    <Play />
                                   </Button>
                                 )}
                                 <Button size="sm" variant="ghost" onClick={() => queueRemove(item.media_id)} title="Retirer de la file">

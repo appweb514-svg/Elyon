@@ -86,7 +86,7 @@ function VncWindow({ frame, delay }: { frame: WallFrame; delay?: number }) {
                 : "16 / 9",
           }}
         >
-          {online && frame.player_state !== "playing" && frame.player_state !== "blank" ? (
+          {online && frame.player_state !== "playing" && frame.player_state !== "blank" && frame.player_state !== "paused" ? (
             <div className="elyon-idle absolute inset-0 flex flex-col items-center justify-center gap-3 overflow-hidden">
               <span className="elyon-idle-orb left-[8%] top-[15%] h-24 w-24 bg-sky-500" />
               <span className="elyon-idle-orb right-[10%] top-[55%] h-32 w-32 bg-indigo-500" style={{ animationDelay: "3s" }} />

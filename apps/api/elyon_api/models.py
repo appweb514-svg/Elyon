@@ -231,6 +231,8 @@ class Device(Base):
     current_page_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Gel de l'affichage piloté depuis le back-office (bouton Pause).
     is_paused: Mapped[bool] = mapped_column(Boolean, default=False)
+    # La file manuelle ne défile qu'après une action explicite « Lire ».
+    queue_auto_advance: Mapped[bool] = mapped_column(Boolean, default=False)
     # Configuration réseau cible (appliquée par l'agent via commande NETWORK).
     network_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_preview: Mapped[bool] = mapped_column(Boolean, default=False)

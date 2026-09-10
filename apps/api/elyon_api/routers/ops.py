@@ -237,6 +237,7 @@ def _issue_show(db: Session, device: Device, media: Media, user: User) -> Comman
     device.current_media_id = media.id
     device.player_state = "playing"
     device.is_paused = False
+    device.queue_auto_advance = True
     audit(db, "media.show", "media", media.id, detail=f"device={device.id} {media.name}", user=user)
     db.commit()
     db.refresh(cmd)
@@ -345,6 +346,8 @@ def get_device_queue(
                 "kind": media.kind.value,
                 "playing": device.current_media_id == media.id
                 and device.player_state == "playing",
+                "paused": device.current_media_id == media.id
+                and (device.is_paused or device.player_state == "paused"),
             }
         )
     return {
@@ -481,6 +484,7 @@ def queue_stop(
     device.current_media_id = None
     device.player_state = "idle"
     device.is_paused = False
+    device.queue_auto_advance = False
     playback_state.mark_queue_stopped(device)
     audit(db, "device.queue_stop", "device", device.id, user=user)
     db.commit()
@@ -1282,7 +1286,7 @@ def _queue_advance_if_needed(db: Session, device: Device, settings) -> None:
     """
     if device.player_state != "playing" or not device.current_media_id:
         return
-    if device.is_paused:
+    if device.is_paused or not device.queue_auto_advance:
         return
     if not playback_state.auto_advance_allowed(device):
         return
@@ -1329,6 +1333,7 @@ def _queue_advance_if_needed(db: Session, device: Device, settings) -> None:
     db.add(cmd)
     device.current_media_id = media.id
     device.player_state = "playing"
+    device.queue_auto_advance = True
     device.queue_started_media_id = media.id
     device.queue_started_at = now
     audit(db, "device.queue_auto_next", "device", device.id, detail=media.name)
