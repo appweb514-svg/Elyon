@@ -521,7 +521,7 @@ def list_media(
             raise HTTPException(status_code=404, detail="Appareil introuvable")
         require_site_access(db, user, device.org_id)
         require_site_id_access(user, device.site_id)
-        scope = (Media.org_id == device.org_id,)
+        scope = () if user.role == Role.SUPERADMIN else (Media.org_id == device.org_id,)
     else:
         scope = (*_media_scope(db, user),)
     if trash:

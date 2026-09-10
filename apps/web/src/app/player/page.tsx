@@ -182,9 +182,12 @@ export default function PlayerPage() {
       void fetchFeed();
       const feedTimer = setInterval(fetchFeed, 5 * 60 * 1000);
 
-      // Commandes serveur (Afficher / Arrêter) : le player web ne lisait que
-      // le manifeste, « Afficher » n'avait donc aucun effet.
+      // Commandes serveur (Afficher / Arrêter / Pause) : le polling continue
+      // pendant la lecture pour qu'une pause soit immédiate.
+      let commandPollBusy = false;
       const checkCommands = async () => {
+        if (commandPollBusy) return;
+        commandPollBusy = true;
         const commands = await fetchCommands(s);
         for (const command of commands) {
           let commandError: string | null = null;
@@ -232,7 +235,9 @@ export default function PlayerPage() {
           }
           await ackCommand(s, command.id, commandError);
         }
+        commandPollBusy = false;
       };
+      const commandTimer = setInterval(() => void checkCommands(), 1000);
 
       // Boucle : commandes → manifeste → lecture → heartbeat.
       const loop = async () => {
@@ -327,6 +332,7 @@ export default function PlayerPage() {
       return () => {
         alive = false;
         clearInterval(feedTimer);
+        clearInterval(commandTimer);
       };
     },
     [],

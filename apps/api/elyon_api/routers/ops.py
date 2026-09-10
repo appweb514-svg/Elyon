@@ -368,7 +368,7 @@ def queue_add(
     media = db.get(Media, str(body.get("media_id") or ""))
     if media is None:
         raise HTTPException(status_code=404, detail="Média introuvable")
-    if media.org_id != device.org_id:
+    if media.org_id != device.org_id and user.role != Role.SUPERADMIN:
         raise HTTPException(status_code=400, detail="Média hors organisation de l'appareil")
     items = _device_queue_items(device)
     if any(i["media_id"] == media.id for i in items):
