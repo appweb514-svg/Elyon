@@ -151,7 +151,7 @@ def _run_root(args: list[str]) -> None:
         )
 
 
-def _apply_static_network(payload: dict) -> None:
+def _apply_static_network(payload: dict[str, str]) -> None:
     """IP statique : NetworkManager si présent, sinon dhcpcd.conf."""
     import shutil
     import subprocess
@@ -191,7 +191,13 @@ def _apply_static_network(payload: dict) -> None:
         return
     conf = Path("/etc/dhcpcd.conf")
     if conf.exists():
-        block = f"\ninterface {iface}\nstatic ip_address={ip if '/' in ip else ip + '/' + (netmask if netmask.isdigit() else _netmask_to_cidr(netmask))}\n"
+        if "/" in ip:
+            cidr = ip
+        elif netmask.isdigit():
+            cidr = f"{ip}/{netmask}"
+        else:
+            cidr = f"{ip}/{_netmask_to_cidr(netmask)}"
+        block = f"\ninterface {iface}\nstatic ip_address={cidr}\n"
         if gateway:
             block += f"static routers={gateway}\n"
         for d in dns:

@@ -23,8 +23,6 @@ from elyon_api.routers import (
     users,
 )
 
-settings = Settings()
-
 
 def migrate(settings: Settings) -> None:
     from alembic import command
@@ -37,35 +35,6 @@ def migrate(settings: Settings) -> None:
     command.upgrade(alembic_cfg, "head")
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    app.state.settings = settings
-    app.state.session_factory = build_session_factory(settings)
-    if settings.auto_migrate:
-        migrate(settings)
-    # Purge de la corbeille (>30 jours) au démarrage puis toutes les 6 h.
-    import asyncio
-
-    from elyon_api.services.trash import purge_expired_trash
-
-    async def _trash_sweeper() -> None:
-        from elyon_api.services.alerts import sweep_offline_alerts
-
-        while True:
-            try:
-                purge_expired_trash(app.state.session_factory, app.state.settings)
-                sweep_offline_alerts(app.state.session_factory, app.state.settings)
-            except Exception:  # noqa: BLE001 — jamais bloquant
-                pass
-            await asyncio.sleep(60 if app.state.settings.alert_smtp_host else 6 * 3600)
-
-    sweeper = asyncio.create_task(_trash_sweeper())
-    try:
-        yield
-    finally:
-        sweeper.cancel()
-
-
 def create_app(app_settings: Settings | None = None, run_migrations: bool = True) -> FastAPI:
     app_settings = app_settings or Settings()
 
@@ -73,9 +42,28 @@ def create_app(app_settings: Settings | None = None, run_migrations: bool = True
     async def _lifespan(app: FastAPI):
         app.state.settings = app_settings
         app.state.session_factory = build_session_factory(app_settings)
-        if run_migrations:
+        if run_migrations and app_settings.auto_migrate:
             migrate(app_settings)
-        yield
+        # Purge de la corbeille (>30 jours) et alertes « hors ligne ».
+        import asyncio
+
+        from elyon_api.services.alerts import sweep_offline_alerts
+        from elyon_api.services.trash import purge_expired_trash
+
+        async def _sweeper() -> None:
+            while True:
+                try:
+                    purge_expired_trash(app.state.session_factory, app.state.settings)
+                    sweep_offline_alerts(app.state.session_factory, app.state.settings)
+                except Exception:  # noqa: BLE001 — jamais bloquant
+                    pass
+                await asyncio.sleep(60 if app.state.settings.alert_smtp_host else 6 * 3600)
+
+        sweeper = asyncio.create_task(_sweeper())
+        try:
+            yield
+        finally:
+            sweeper.cancel()
 
     application = FastAPI(
         title="Elyon API",

@@ -4,10 +4,10 @@ import datetime as dt
 import hashlib
 import json
 import re
-from typing import Any
+from typing import Any, BinaryIO, cast
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, UploadFile
-from fastapi.responses import Response
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -125,23 +125,30 @@ def upload_media(
     storage = build_storage(settings)
     sha = hashlib.sha256()
     total = 0
+    import tempfile
     import uuid as _uuid
 
     tmp_path = safe_storage_path(f"originals/{org}/.upload-{_uuid.uuid4().hex}")
     storage.delete(tmp_path)
-    while True:
-        chunk = file.file.read(1024 * 512)
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > settings.max_media_bytes:
+    # Tampon disque (spill > 8 Mio) : un seul write final. Sur le backend S3,
+    # un append par chunk relisait et réécrivait tout l'objet à chaque fois
+    # (upload quadratique).
+    with tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024) as spool:
+        while True:
+            chunk = file.file.read(1024 * 512)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > settings.max_media_bytes:
+                storage.delete(tmp_path)
+                raise HTTPException(status_code=413, detail="Fichier trop volumineux")
+            sha.update(chunk)
+            spool.write(chunk)
+        if total == 0:
             storage.delete(tmp_path)
-            raise HTTPException(status_code=413, detail="Fichier trop volumineux")
-        sha.update(chunk)
-        storage.append(tmp_path, chunk)
-    if total == 0:
-        storage.delete(tmp_path)
-        raise HTTPException(status_code=400, detail="Fichier vide")
+            raise HTTPException(status_code=400, detail="Fichier vide")
+        spool.seek(0)
+        storage.write(tmp_path, cast(BinaryIO, spool))
     rel_path = safe_storage_path(f"originals/{org}/{sha.hexdigest()}")
     if storage.exists(rel_path):
         storage.delete(tmp_path)
@@ -172,10 +179,9 @@ def upload_media(
         process_media_task.delay(media.id)
     elif settings.process_media_inline:
         from elyon_api.services.media_processing import process_media
-        from elyon_api.services.storage import LocalStorage
 
         try:
-            process_media(media, settings, LocalStorage(settings.media_storage_root))
+            process_media(media, settings)
             db.commit()
             db.refresh(media)
         except Exception as exc:  # noqa: BLE001 — un échec de conversion ne
@@ -318,7 +324,7 @@ def stop_show_media(
         device.current_media_id = None
     from elyon_api.services.playback_state import mark_queue_stopped
 
-    mark_queue_stopped(device.id)
+    mark_queue_stopped(device)
     db.commit()
     db.refresh(cmd)
     audit(
@@ -439,10 +445,13 @@ def _check_quota(
 
 @router.get("")
 def list_media(
+    response: Response,
     kind: MediaKind | None = None,
     status: MediaStatus | None = None,
     trash: bool = False,
     origin: str | None = None,
+    limit: int | None = Query(default=None, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     user: User = Depends(require_permission(Permission.MEDIA_VIEW)),
     db: Session = Depends(get_db),
 ) -> list[MediaOut]:
@@ -451,6 +460,9 @@ def list_media(
     `origin=mine` : mes médias personnels (sans équipe).
     `origin=team` : les fichiers partagés par mon équipe.
     Sans filtre : les deux. Les médias corbeillés ne comptent pas dans les quotas.
+    `limit`/`offset` (optionnels) paginent ; l'en-tête `X-Total-Count`
+    donne le total filtré. Sans `limit`, la liste complète est renvoyée
+    (compatibilité back-office).
     """
     scope = *_media_scope(db, user),
     if trash:
@@ -469,6 +481,10 @@ def list_media(
         stmt = stmt.where(Media.kind == kind)
     if status:
         stmt = stmt.where(Media.status == status)
+    total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+    response.headers["X-Total-Count"] = str(total)
+    if limit is not None:
+        stmt = stmt.limit(limit).offset(offset)
     items = db.scalars(stmt).all()
     out: list[MediaOut] = []
     team_names: dict[str, str] = {}
@@ -631,15 +647,15 @@ def download_media(
     storage = build_storage(request.app.state.settings)
     if not storage.exists(media.storage_path):
         raise HTTPException(status_code=404, detail="Fichier manquant")
-    with storage.open_read(media.storage_path) as f:
-        data = f.read()
     filename = re.sub(r"[^A-Za-z0-9._-]+", "_", media.original_filename or media.name)
-    return Response(
-        content=data,
+    # Streaming : un fichier de 500 Mo n'est plus chargé en mémoire.
+    return StreamingResponse(
+        storage.iter_read(media.storage_path),
         media_type=media.mime_type,
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
-            "Content-Length": str(len(data)),
+            "Content-Length": str(storage.size(media.storage_path)),
+            "Accept-Ranges": "bytes",
         },
     )
 
@@ -749,26 +765,28 @@ def _serve_file(storage, rel_path: str, mime_type: str, size: int, request: Requ
         if match:
             start = int(match.group(1))
             end = int(match.group(2)) if match.group(2) else size - 1
+            # Un client peut demander plus large que le fichier (video
+            # seek) : borner la fin, sinon l'en-tête Content-Range ment.
+            end = min(end, size - 1)
             if start >= size or end < start:
                 return Response(
                     status_code=416, headers={"Content-Range": f"bytes */{size}"}
                 )
-            with storage.open_read(rel_path) as f:
-                f.seek(start)
-                data = f.read(end - start + 1)
-            return Response(
-                content=data,
+            return StreamingResponse(
+                storage.iter_read(rel_path, start, end),
                 status_code=206,
                 media_type=mime_type,
                 headers={
                     "Content-Range": f"bytes {start}-{end}/{size}",
                     "Accept-Ranges": "bytes",
-                    "Content-Length": str(len(data)),
+                    "Content-Length": str(end - start + 1),
                 },
             )
-    with storage.open_read(rel_path) as f:
-        data = f.read()
-    return Response(content=data, media_type=mime_type)
+    return StreamingResponse(
+        storage.iter_read(rel_path),
+        media_type=mime_type,
+        headers={"Accept-Ranges": "bytes", "Content-Length": str(size)},
+    )
 
 
 @router.delete("/{media_id}", status_code=204)

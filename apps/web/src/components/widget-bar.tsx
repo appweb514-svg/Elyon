@@ -34,6 +34,9 @@ const TYPE_META: Record<string, { label: string; icon: typeof CloudSun; hint: st
   clock: { label: "Horloge", icon: Clock3, hint: "en haut à droite" },
 };
 
+/** Nombre maximum de widgets par écran (les barres comptent dedans). */
+const MAX_WIDGETS = 3;
+
 /** Taille du widget : grandit le texte (rendu player + aperçu serveur). */
 const SIZES = [
   { value: "small", label: "Petit" },
@@ -144,30 +147,44 @@ export function WidgetBar({
 
   const topBarEnabled = findBar("weather") !== undefined || findBar("clock") !== undefined;
   const bottomBarEnabled = findBar("rss") !== undefined || findBar("ticker") !== undefined;
+  const atLimit = widgets.length >= MAX_WIDGETS;
 
-  function toggleTopBar(enable: boolean) {
-    const rest = widgets.filter((w) => !(w.type === "weather" || w.type === "clock"));
-    if (!enable) {
-      onChange(rest);
+  /** Active/désactive une barre en conservant les paramètres des widgets. */
+  function upsertBar(types: string[], defaults: Widget[], enable: boolean) {
+    const existing = widgets.filter((w) => types.includes(w.type));
+    if (existing.length > 0) {
+      // Les widgets restent dans la liste (masqués) : ville, format, texte…
+      // ne sont pas perdus quand on éteint puis rallume la barre.
+      onChange(
+        widgets.map((w) => (types.includes(w.type) ? { ...w, visible: enable } : w))
+      );
       return;
     }
-    onChange([
-      ...rest,
-      { type: "weather", position: "top-band", locked: true, visible: true, params: defaultParams("weather") },
-      { type: "clock", position: "top-right", locked: true, visible: true, params: defaultParams("clock") },
-    ]);
+    if (!enable) return;
+    const missing = defaults.filter((d) => !widgets.some((w) => w.type === d.type));
+    if (widgets.length + missing.length > MAX_WIDGETS) return;
+    onChange([...widgets, ...missing]);
+  }
+
+  function toggleTopBar(enable: boolean) {
+    upsertBar(
+      ["weather", "clock"],
+      [
+        { type: "weather", position: "top-band", locked: true, visible: true, params: defaultParams("weather") },
+        { type: "clock", position: "top-right", locked: true, visible: true, params: defaultParams("clock") },
+      ],
+      enable
+    );
   }
 
   function toggleBottomBar(enable: boolean) {
-    const rest = widgets.filter((w) => !(w.type === "rss" || w.type === "ticker"));
-    if (!enable) {
-      onChange(rest);
-      return;
-    }
-    onChange([
-      ...rest,
-      { type: "rss", position: "bottom-ticker", locked: true, visible: true, params: defaultParams("rss") },
-    ]);
+    upsertBar(
+      ["rss", "ticker"],
+      [
+        { type: "rss", position: "bottom-ticker", locked: true, visible: true, params: defaultParams("rss") },
+      ],
+      enable
+    );
   }
 
   async function previewWeather(index: number, city: string) {
@@ -211,10 +228,22 @@ export function WidgetBar({
             <div className="space-y-1">
               <Label className="text-xs">Ville</Label>
               <div className="flex gap-1">
-                <Input value={String(w.params.city ?? "")} onChange={(e) => update(index, { params: { ...w.params, city: e.target.value } })} placeholder="Paris" />
+                <Input
+                  value={String(w.params.city ?? "")}
+                  onChange={(e) => {
+                    update(index, { params: { ...w.params, city: e.target.value } });
+                    setPreview((p) => {
+                      const next = { ...p };
+                      delete next[`w${index}`];
+                      return next;
+                    });
+                  }}
+                  placeholder="Paris"
+                />
                 <Button type="button" size="sm" variant="outline" onClick={() => previewWeather(index, String(w.params.city ?? ""))}>Tester</Button>
               </div>
               {loading === `w${index}` && <p className="text-xs text-muted-foreground">Interrogation…</p>}
+              <div aria-live="polite">
               {preview[`w${index}`] != null &&
                 (() => {
                   const data = preview[`w${index}`] as {
@@ -233,6 +262,7 @@ export function WidgetBar({
                     </div>
                   );
                 })()}
+              </div>
             </div>
           )}
           {w.type === "rss" && (
@@ -322,13 +352,22 @@ export function WidgetBar({
         {Object.entries(TYPE_META).map(([type, meta]) => {
           const Icon = meta.icon;
           return (
-            <Button key={type} type="button" variant="outline" size="sm" onClick={() => add(type)} title={meta.hint}>
+            <Button
+              key={type}
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => add(type)}
+              title={atLimit ? "Maximum de 3 widgets atteint" : meta.hint}
+              disabled={atLimit}
+            >
               <Icon /> {meta.label}
             </Button>
           );
         })}
-        <span className="text-xs text-muted-foreground">
-          Emplacements fixes. Cliquez sur ⚙ pour configurer (taille petit/moyen/grand, 3 widgets maximum).
+        <span className="text-xs text-muted-foreground" aria-live="polite">
+          Emplacements fixes. Cliquez sur ⚙ pour configurer (taille petit/moyen/grand,{" "}
+          {widgets.length}/{MAX_WIDGETS} widgets).
         </span>
       </div>
 
@@ -353,8 +392,18 @@ export function WidgetBar({
                 <Button type="button" size="icon" variant="ghost" aria-label="Configurer le widget" title="Paramètres" onClick={() => onOpenChange(id)}>
                   <Settings2 />
                 </Button>
-                <Button type="button" size="sm" variant="ghost" aria-label="Supprimer le widget" onClick={() => { if (openId === id) onOpenChange(null); onChange(widgets.filter((_, j) => j !== i)); }}>
-                  ✕
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  aria-label="Supprimer le widget"
+                  title="Supprimer"
+                  onClick={() => {
+                    if (openId === id) onOpenChange(null);
+                    onChange(widgets.filter((_, j) => j !== i));
+                  }}
+                >
+                  <X />
                 </Button>
               </div>
               {openId === id && renderConfigPanel(w, i)}

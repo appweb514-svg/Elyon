@@ -30,17 +30,20 @@ test-web: ## Tests Web (vitest)
 	cd apps/web && NODE_ENV=test ./node_modules/.bin/vitest run
 
 dev: ## Démarre l'environnement local avec Docker Compose
+	docker network create dokploy-network 2>/dev/null || true
 	docker compose up -d
 
 LAB_COMPOSE := docker compose -f compose.yaml -f compose.lab.yaml
 
 lab: ## Serveur + 2 Raspberry Pi émulés (enrôlés, publiés)
 	mkdir -p .lab/enroll
+	docker network create dokploy-network 2>/dev/null || true
 	$(LAB_COMPOSE) up -d --build
 	$(PYTHON) player/lab/bootstrap.py --api http://127.0.0.1:8000 --enroll-dir .lab/enroll
 
 lab-arm: ## Lab players en linux/arm64 (QEMU user-mode, Pi 4/5)
 	mkdir -p .lab/enroll
+	docker network create dokploy-network 2>/dev/null || true
 	$(LAB_COMPOSE) -f compose.lab.arm64.yaml up -d --build
 	$(PYTHON) player/lab/bootstrap.py --api http://127.0.0.1:8000 --enroll-dir .lab/enroll
 

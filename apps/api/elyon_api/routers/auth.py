@@ -19,22 +19,36 @@ from elyon_api.security import (
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-_login_bucket: dict[str, list[float]] = {}
+_login_failures: dict[str, list[float]] = {}
+
+_LOGIN_WINDOW_SECONDS = 60
 
 
-def _rate_limited(ip: str, settings) -> None:
-    """Comptabilise la tentative en cours puis refuse au-delà du quota.
+def _prune_login_failures(now: float) -> None:
+    """Purge les entrées expirées (évite que le seau ne grossisse sans fin)."""
+    for ip in list(_login_failures):
+        entries = [t for t in _login_failures[ip] if now - t < _LOGIN_WINDOW_SECONDS]
+        if entries:
+            _login_failures[ip] = entries
+        else:
+            del _login_failures[ip]
 
-    Chaque appel enregistre un horodatage (échec comme succès) : sans
-    append, le seau reste vide et la limite est inopérante (brute-force).
+
+def _rate_limit_check(ip: str, settings) -> None:
+    """Refuse la tentative si le quota d'échecs récents est atteint.
+
+    Seuls les échecs comptent : un utilisateur légitime derrière un NAT ne
+    doit pas être bloqué par les connexions réussies des autres.
     """
     now = time.time()
-    window = 60
-    entries = [t for t in _login_bucket.get(ip, []) if now - t < window]
-    entries.append(now)
-    _login_bucket[ip] = entries
-    if len(entries) >= settings.max_login_attempts_per_minute:
+    _prune_login_failures(now)
+    if len(_login_failures.get(ip, [])) >= settings.max_login_attempts_per_minute:
         raise HTTPException(status_code=429, detail="Trop de tentatives, réessayez plus tard")
+
+
+def _rate_limit_record_failure(ip: str) -> None:
+    now = time.time()
+    _login_failures.setdefault(ip, []).append(now)
 
 
 @router.post("/bootstrap", status_code=201)
@@ -62,9 +76,10 @@ def login(
 ) -> UserOut:
     settings = request.app.state.settings
     ip = request.client.host if request.client else "unknown"
-    _rate_limited(ip, settings)
+    _rate_limit_check(ip, settings)
     user = db.scalar(select(User).where(User.email == str(body.email).lower()))
     if user is None or not verify_password(body.password, user.password_hash):
+        _rate_limit_record_failure(ip)
         raise HTTPException(status_code=401, detail="Identifiants invalides")
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Compte désactivé")
@@ -122,7 +137,7 @@ def patch_me(
     data = body.model_dump(exclude_none=True)
     if not data:
         raise HTTPException(status_code=422, detail="Aucune modification fournie")
-    email_changed = False
+    changed_fields: list[str] = []
     if "password" in data:
         if "current_password" not in data or not verify_password(
             data["current_password"], user.password_hash
@@ -132,15 +147,17 @@ def patch_me(
             )
         user.password_hash = hash_password(data.pop("password"))
         data.pop("current_password", None)
+        changed_fields.append("password")
     if "email" in data:
         new_email = str(data.pop("email")).lower().strip()
         if new_email != user.email:
             if db.scalar(select(User).where(User.email == new_email)):
                 raise HTTPException(status_code=409, detail="Email déjà utilisé")
             user.email = new_email
-            email_changed = True
+            changed_fields.append("email")
     if "full_name" in data:
         user.full_name = str(data.pop("full_name")).strip()
+        changed_fields.append("full_name")
     if data:
         raise HTTPException(status_code=422, detail="Champ(s) inconnu(s)")
     db.commit()
@@ -150,7 +167,7 @@ def patch_me(
         "profile.update",
         "user",
         user.id,
-        detail="password" if email_changed else "profil",
+        detail=",".join(changed_fields) or "profil",
         user=user,
         ip=request.client.host if request.client else None,
     )

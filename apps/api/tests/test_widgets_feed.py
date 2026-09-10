@@ -92,3 +92,12 @@ def test_weather_cache_serves_forecast_until_ttl(monkeypatch):
     second = wf.fetch_weather(q="Paris")
     assert second["forecast"] == first["forecast"]
     assert calls["n"] == 2  # géocodage + météo une seule fois (cache)
+
+
+def test_fr_day_label_matches_iso_date():
+    """Les libellés de prévision suivent le vrai jour de la semaine."""
+    from elyon_api.routers.ops import _fr_day_label
+
+    assert _fr_day_label("2026-09-10", 0) == "jeu"
+    assert _fr_day_label("2026-09-13", 3) == "dim"
+    assert _fr_day_label(None, 0) == "lun"

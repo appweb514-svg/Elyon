@@ -87,7 +87,6 @@ export default function AuditPage() {
   const [pageSize, setPageSize] = useState(10);
   const [offset, setOffset] = useState(0);
   const [total, setTotal] = useState(0);
-  const [names, setNames] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     try {

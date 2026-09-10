@@ -212,6 +212,16 @@ class Device(Base):
     current_media_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # File de diffusion : JSON [{media_id, position}], position courante en tête.
     queue_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Auto-enchaînement de la file : média de tête + instant de début, et gel
+    # après un arrêt manuel. Persisté en base pour fonctionner avec plusieurs
+    # répliques API (l'ancien état était en mémoire).
+    queue_started_media_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    queue_started_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    queue_stop_until: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # Configuration réseau cible (appliquée par l'agent via commande NETWORK).
     network_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_preview: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -230,12 +240,10 @@ class Device(Base):
 
     @property
     def network(self) -> dict | None:
-        import json as _json
-
         if not self.network_json:
             return None
         try:
-            data = _json.loads(self.network_json)
+            data = json.loads(self.network_json)
         except (ValueError, TypeError):
             return None
         return data if isinstance(data, dict) else None

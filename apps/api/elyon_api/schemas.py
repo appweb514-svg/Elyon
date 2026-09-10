@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import uuid
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -141,13 +142,15 @@ class ScreenLayout(BaseModel):
 class WidgetIn(BaseModel):
     """Widget d'information affiché sur l'écran (météo, RSS, texte)."""
 
-    type: str = Field(description="weather|rss|text|clock|html")
+    type: str = Field(description="weather|rss|text|ticker|clock")
     position: str = Field(
         default="bottom-left",
         description=(
-            "top-left|top-right|bottom-left|bottom-center|bottom-right|bottom-ticker "
+            "top-left|top-right|top-band|center|bottom-left|bottom-center|"
+            "bottom-right|bottom-ticker "
             "(barre du haut : météo à gauche / horloge à droite ; "
-            "bottom-ticker : flux RSS défilant en barre pleine largeur)"
+            "bottom-ticker : flux RSS ou texte défilant en barre pleine largeur ; "
+            "center : texte libre au milieu de l'écran)"
         ),
     )
     visible: bool = True
@@ -155,7 +158,7 @@ class WidgetIn(BaseModel):
 
 
 class WidgetOut(WidgetIn):
-    id: str = Field(default_factory=lambda: __import__("uuid").uuid4().hex[:12])
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
 
 
 class ScreenPatch(BaseModel):

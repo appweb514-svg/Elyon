@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from elyon_api.config import Settings
 from elyon_api.db import get_db
 from elyon_api.deps import audit, require_roles
-from elyon_api.models import Device, EnrollmentToken, Organization, Role, Site, User
+from elyon_api.models import Device, EnrollmentToken, Organization, Role, Screen, Site, User
 from elyon_api.security import hash_code, new_short_code
 
 router = APIRouter(prefix="/api/admin/lab", tags=["lab"])
@@ -98,12 +98,10 @@ def install(
     written = _write_code_files(settings, codes)
     # Écrans par défaut pour les players lab enrôlés sans écran :
     # sans écran, pas de layout → les widgets ne peuvent jamais s'afficher.
-    from elyon_api.models import Device as _Device
-
     for device in db.scalars(
-        select(_Device).where(_Device.serial.in_(serials))
+        select(Device).where(Device.serial.in_(serials))
     ):
-        if device.screen_id is None:
+        if device.screen is None:
             db.add(
                 Screen(
                     name=f"Écran {device.name}",

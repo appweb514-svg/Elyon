@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -14,11 +15,32 @@ from elyon_api.models import (
     Device,
     DeviceStatus,
     Media,
+    MediaStatus,
     Playlist,
     PlaylistItem,
 )
 
 router = APIRouter(prefix="/api/trigger", tags=["triggers"])
+
+
+def _require_trigger_secret(request: Request) -> None:
+    """Authentifie l'appelant par le secret partagé, en temps constant."""
+    settings = request.app.state.settings
+    if not settings.trigger_secret:
+        raise HTTPException(status_code=404, detail="Trigger non configuré")
+    supplied = request.headers.get("X-Trigger-Secret", "")
+    if not hmac.compare_digest(supplied, settings.trigger_secret):
+        raise HTTPException(status_code=403, detail="Secret invalide")
+
+
+async def _read_json_body(request: Request) -> dict:
+    try:
+        body = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Corps JSON invalide") from None
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Corps JSON invalide")
+    return body
 
 
 @router.post("/{device_id}/show")
@@ -34,14 +56,9 @@ async def trigger_show(
     média précis, sans passer par le back-office — par ex. message
     d'évacuation, alerte météo, GMAO.
     """
-    settings = request.app.state.settings
-    if not settings.trigger_secret:
-        raise HTTPException(status_code=404, detail="Trigger non configuré")
-    supplied = request.headers.get("X-Trigger-Secret", "")
-    if supplied != settings.trigger_secret:
-        raise HTTPException(status_code=403, detail="Secret invalide")
+    _require_trigger_secret(request)
 
-    body = await request.json()
+    body = await _read_json_body(request)
     media_id = body.get("media_id") or body.get("media")
     duration = body.get("duration_seconds")
     if not media_id:
@@ -64,19 +81,22 @@ async def trigger_show(
     }
     if duration is not None:
         try:
-            payload["duration_seconds"] = int(duration)
+            duration_seconds = int(duration)
         except (TypeError, ValueError):
             raise HTTPException(status_code=422, detail="duration_seconds invalide") from None
+        if not 1 <= duration_seconds <= 86_400:
+            raise HTTPException(status_code=422, detail="duration_seconds invalide")
+        payload["duration_seconds"] = duration_seconds
 
     # Annule les shows en attente précédents pour ce device.
     for stale in db.scalars(
         select(Command).where(
             Command.device_id == device.id,
             Command.type == CommandType.SHOW,
-            Command.status == "pending",
+            Command.status == CommandStatus.PENDING,
         )
     ):
-        stale.status = CommandStatus.FAILED  # type: ignore[assignment, name-defined]
+        stale.status = CommandStatus.FAILED
         stale.error = "Remplacé par un trigger"
 
     cmd = Command(
@@ -101,13 +121,9 @@ async def trigger_playlist(
     Identique à `trigger_show` mais cible une playlist : le premier média
     prêt de la playlist est affiché immédiatement sur l'écran.
     """
-    settings = request.app.state.settings
-    if not settings.trigger_secret:
-        raise HTTPException(status_code=404, detail="Trigger non configuré")
-    if request.headers.get("X-Trigger-Secret", "") != settings.trigger_secret:
-        raise HTTPException(status_code=403, detail="Secret invalide")
+    _require_trigger_secret(request)
 
-    body = await request.json()
+    body = await _read_json_body(request)
     playlist_id = body.get("playlist_id")
     if not playlist_id:
         raise HTTPException(status_code=422, detail="playlist_id requis")
@@ -128,7 +144,7 @@ async def trigger_playlist(
     if item is None:
         raise HTTPException(status_code=404, detail="Playlist vide")
     media = db.get(Media, item.media_id)
-    if media is None or media.status != "ready":
+    if media is None or media.status != MediaStatus.READY:
         raise HTTPException(status_code=409, detail="Premier média non prêt")
 
     payload: dict[str, str | int] = {
@@ -143,10 +159,10 @@ async def trigger_playlist(
         select(Command).where(
             Command.device_id == device.id,
             Command.type == CommandType.SHOW,
-            Command.status == "pending",
+            Command.status == CommandStatus.PENDING,
         )
     ):
-        stale.status = CommandStatus.FAILED  # type: ignore[assignment, name-defined]
+        stale.status = CommandStatus.FAILED
         stale.error = "Remplacé par un trigger"
 
     cmd = Command(device_id=device.id, type=CommandType.SHOW, payload=json.dumps(payload))

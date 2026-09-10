@@ -15,7 +15,7 @@ def process_media(media_id: str) -> dict:
     from elyon_api.db import build_session_factory
     from elyon_api.models import JobStatus, Media, MediaProcessingJob
     from elyon_api.services import media_processing
-    from elyon_api.services.storage import LocalStorage
+    from elyon_api.services.storage import build_storage
 
     settings = Settings()
     factory = build_session_factory(settings)
@@ -34,8 +34,7 @@ def process_media(media_id: str) -> dict:
         job.attempts += 1
         session.commit()
         try:
-            storage = LocalStorage(settings.media_storage_root)
-            media_processing.process_media(media, settings, storage)
+            media_processing.process_media(media, settings, build_storage(settings))
             job.status = JobStatus.DONE
             session.commit()
             return {"status": "done", "media_id": media_id}
@@ -49,9 +48,10 @@ def process_media(media_id: str) -> dict:
             return {"status": "failed", "media_id": media_id, "error": str(exc)}
 
 
-@celery.task(name="elyon.process_media", max_retries=2)
-def process_media_task(media_id: str) -> dict:
+@celery.task(name="elyon.process_media", bind=True, max_retries=2)
+def process_media_task(self, media_id: str) -> dict:
     result = process_media(media_id)
     if result["status"] == "failed":
-        raise RuntimeError(result["error"])
+        # Re-tente avec un backoff ; au-delà de max_retries Celery abandonne.
+        raise self.retry(exc=RuntimeError(result["error"]), countdown=30)
     return result

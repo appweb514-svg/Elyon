@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Download, Eye, FolderInput, ListPlus, Pencil, Share2, Trash2 } from "lucide-react";
 
 import { api, formatBytes, formatDate } from "@/lib/api";
@@ -114,7 +114,7 @@ export default function MediaPage() {
     setPreviewPageError(false);
   }
 
-  async function reload() {
+  const reload = useCallback(async () => {
     try {
       const originQs = view === "library" && origin !== "all" ? `&origin=${origin}` : "";
       const [list, q, team] = await Promise.all([
@@ -129,9 +129,9 @@ export default function MediaPage() {
     } catch (err) {
       setError(String((err as Error).message ?? err));
     }
-  }
+  }, [view, origin]);
 
-  async function loadContext() {
+  const loadContext = useCallback(async () => {
     try {
       const [me, deviceList, playlistList] = await Promise.all([
         api.get<{ role: string }>("/api/auth/me"),
@@ -149,13 +149,12 @@ export default function MediaPage() {
     } catch (err) {
       setError(String((err as Error).message ?? err));
     }
-  }
+  }, []);
 
   useEffect(() => {
     loadContext();
-
     reload();
-  }, [view, origin]);
+  }, [loadContext, reload]);
 
   async function upload(files: FileList | null) {
     if (!files || files.length === 0) return;

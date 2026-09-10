@@ -3,24 +3,23 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 from elyon_api.config import Settings
 from elyon_api.models import Media, MediaKind, MediaStatus
-from elyon_api.services.storage import LocalStorage, safe_storage_path
+from elyon_api.services.storage import StorageBackend, build_storage, safe_storage_path
 
 try:  # iPhone (HEIC/HEIF) : opener optionnel
     import pillow_heif
 
     pillow_heif.register_heif_opener()
 except ImportError:
-    pillow_heif = None
+    pillow_heif = None  # type: ignore[assignment]
 
 
 def _rasterize_vector(src: Path, out_path: Path) -> bool:
     """SVG → PNG (cairosvg) : PIL ne sait pas ouvrir les SVG."""
-    import io as _io
-
     try:
         import cairosvg
 
@@ -67,11 +66,15 @@ def _pdf_to_images(pdf_path: Path, out_dir: Path) -> list[str]:
     if shutil.which("pdftoppm") is None:
         raise RuntimeError("pdftoppm indisponible (poppler-utils requis)")
     out_dir.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        ["pdftoppm", "-png", "-r", "120", str(pdf_path), str(out_dir / "page")],
-        check=True,
-        capture_output=True,
-    )
+    try:
+        subprocess.run(
+            ["pdftoppm", "-png", "-r", "120", str(pdf_path), str(out_dir / "page")],
+            check=True,
+            capture_output=True,
+            timeout=300,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("Conversion PDF expirée") from exc
     pages = sorted(p.name for p in out_dir.glob("page-*.png"))
     if not pages:
         raise RuntimeError("Aucune page produite pour ce PDF")
@@ -102,43 +105,84 @@ def _office_to_pdf(src: Path, out_dir: Path) -> Path:
     return pdf
 
 
-def process_media(media: Media, settings: Settings, storage: LocalStorage | None = None) -> Media:
-    storage = storage or LocalStorage(settings.media_storage_root)
-    src = storage._abs(media.storage_path)  # noqa: SLF001
-    if not src.exists():
-        raise FileNotFoundError(f"Média manquant : {media.storage_path}")
+def _download_source(storage: StorageBackend, media: Media, dest: Path) -> None:
+    """Copie le fichier source du backend de stockage vers un fichier temporaire."""
+    with dest.open("wb") as out:
+        for chunk in storage.iter_read(media.storage_path):
+            out.write(chunk)
 
-    if media.kind == MediaKind.IMAGE:
-        thumb_path = safe_storage_path(f"thumbs/{media.id}.jpg")
-        raster = src
-        if src.suffix.lower() == ".svg":
-            raster_png = storage._abs(safe_storage_path(f"thumbs/{media.id}.png"))  # noqa: SLF001
-            if _rasterize_vector(src, raster_png):
-                raster = raster_png
-                media.pages_json = json.dumps([safe_storage_path(f"thumbs/{media.id}.png"), thumb_path])
-        # HEIC/HEIF : pillow-heif doit être enregistré (opener ci-dessus).
-        _thumbnail(raster, storage._abs(thumb_path))  # noqa: SLF001
-        if not media.pages_json:
-            media.pages_json = json.dumps([media.storage_path, thumb_path])
-    elif media.kind == MediaKind.VIDEO:
-        # Vignette de bibliothèque (frame ~3 s) — l'aperçu serveur du mur
-        # reste calculé à la volée avec la position de lecture.
-        thumb_path = safe_storage_path(f"thumbs/{media.id}.jpg")
-        if _video_thumbnail(src, storage._abs(thumb_path)):  # noqa: SLF001
-            media.pages_json = json.dumps([media.storage_path, thumb_path])
-    elif media.kind == MediaKind.PDF:
-        out_dir = safe_storage_path(f"pdf/{media.id}")
-        pages = _pdf_to_images(src, storage._abs(out_dir))  # noqa: SLF001
-        media.pages_json = json.dumps([safe_storage_path(f"{out_dir}/{p}") for p in pages])
-    elif media.kind == MediaKind.OFFICE:
-        # Diaporama : conversion en PDF puis une image par page/diapositive.
-        out_dir = safe_storage_path(f"office/{media.id}")
-        pdf = _office_to_pdf(src, storage._abs(out_dir))  # noqa: SLF001
-        rel_pdf = safe_storage_path(f"{out_dir}/{pdf.name}")
-        pages_dir = safe_storage_path(f"office/{media.id}/pages")
-        pages = _pdf_to_images(pdf, storage._abs(pages_dir))  # noqa: SLF001
-        media.pages_json = json.dumps([safe_storage_path(f"{pages_dir}/{p}") for p in pages])
-        # Le PDF converti reste téléchargeable / diffusable tel quel.
-        media.storage_path = rel_pdf
+
+def _upload(storage: StorageBackend, rel_path: str, local_path: Path) -> None:
+    with local_path.open("rb") as handle:
+        storage.write(safe_storage_path(rel_path), handle)
+
+
+def process_media(
+    media: Media, settings: Settings, storage: StorageBackend | None = None
+) -> Media:
+    """Convertit un média (vignette, PDF/Office → pages) puis publie le résultat.
+
+    Tout le travail se fait dans un dossier temporaire : aucun accès direct au
+    disque du backend, donc compatible stockage local **et S3**. Le paramètre
+    `storage` permet d'injecter un backend (tests, outillage).
+    """
+    storage = storage or build_storage(settings)
+    with tempfile.TemporaryDirectory(prefix="elyon-media-") as tmp_raw:
+        tmp = Path(tmp_raw)
+        suffix = Path(media.storage_path).suffix
+        source = tmp / f"source{suffix}"
+        _download_source(storage, media, source)
+
+        if media.kind == MediaKind.IMAGE:
+            thumb_rel = f"thumbs/{media.id}.jpg"
+            raster = source
+            page_rels: list[str] = []
+            if source.suffix.lower() == ".svg":
+                raster_rel = f"thumbs/{media.id}.png"
+                raster_local = tmp / "raster.png"
+                if _rasterize_vector(source, raster_local):
+                    _upload(storage, raster_rel, raster_local)
+                    raster = raster_local
+                    page_rels.append(raster_rel)
+            thumb_local = tmp / "thumb.jpg"
+            _thumbnail(raster, thumb_local)
+            _upload(storage, thumb_rel, thumb_local)
+            if page_rels:
+                media.pages_json = json.dumps([*page_rels, thumb_rel])
+            else:
+                media.pages_json = json.dumps([media.storage_path, thumb_rel])
+        elif media.kind == MediaKind.VIDEO:
+            # Vignette de bibliothèque (frame ~3 s) — l'aperçu serveur du mur
+            # reste calculé à la volée avec la position de lecture.
+            thumb_rel = f"thumbs/{media.id}.jpg"
+            thumb_local = tmp / "thumb.jpg"
+            if _video_thumbnail(source, thumb_local):
+                _upload(storage, thumb_rel, thumb_local)
+                media.pages_json = json.dumps([media.storage_path, thumb_rel])
+        elif media.kind == MediaKind.PDF:
+            pages_dir = tmp / "pages"
+            names = _pdf_to_images(source, pages_dir)
+            rels: list[str] = []
+            for name in names:
+                rel = f"pdf/{media.id}/{name}"
+                _upload(storage, rel, pages_dir / name)
+                rels.append(rel)
+            media.pages_json = json.dumps(rels)
+        elif media.kind == MediaKind.OFFICE:
+            # Diaporama : conversion en PDF puis une image par page/diapositive.
+            office_dir = tmp / "office"
+            pdf = _office_to_pdf(source, office_dir)
+            pdf_rel = f"office/{media.id}/{pdf.name}"
+            _upload(storage, pdf_rel, pdf)
+            pages_dir = office_dir / "pages"
+            names = _pdf_to_images(pdf, pages_dir)
+            rels = []
+            for name in names:
+                rel = f"office/{media.id}/pages/{name}"
+                _upload(storage, rel, pages_dir / name)
+                rels.append(rel)
+            media.pages_json = json.dumps(rels)
+            # Le PDF converti reste téléchargeable / diffusable tel quel.
+            media.storage_path = safe_storage_path(pdf_rel)
     media.status = MediaStatus.READY
     return media

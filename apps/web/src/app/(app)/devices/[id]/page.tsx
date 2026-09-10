@@ -338,25 +338,25 @@ export default function DeviceDetailPage() {
     }
   }
 
-  async function loadQueue() {
+  const loadQueue = useCallback(async () => {
     try {
       const data = await api.get<{ items: QueueItem[] }>(`/api/devices/${deviceId}/queue`);
       setQueue(data.items ?? []);
     } catch {
       /* l'appareil peut ne pas être visible : on ignore */
     }
-  }
+  }, [deviceId]);
 
   const refreshAll = useCallback(async () => {
     await loadQueue();
     await reload();
-  }, [reload, deviceId]);
+  }, [reload, loadQueue]);
 
   useEffect(() => {
     loadQueue();
     const h = setInterval(loadQueue, 4000);
     return () => clearInterval(h);
-  }, [deviceId]);
+  }, [loadQueue]);
 
   useEffect(() => {
     api.get<Media[]>("/api/media").then(setMediaList).catch(() => undefined);
@@ -796,7 +796,6 @@ export default function DeviceDetailPage() {
                 {/* Flux MJPEG : le navigateur met à jour l'image tout seul,
                     comme un vrai retour vidéo. La clé force la reconnexion
                     quand le média affiché change. */}
-                {/* eslint-disable-next-line @next/next/no-img-element */}
                 {wall?.player_state !== "playing" && wall?.player_state !== "blank" ? (
                   <div className="elyon-idle absolute inset-0 flex flex-col items-center justify-center gap-3 overflow-hidden">
                     <span className="elyon-idle-orb left-[8%] top-[15%] h-24 w-24 bg-sky-500" />

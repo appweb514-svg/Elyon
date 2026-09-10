@@ -10,7 +10,6 @@ from elyon_api.db import get_db
 from elyon_api.deps import (
     audit,
     require_permission,
-    require_roles,
     require_same_org,
     require_site_access,
 )
@@ -56,9 +55,6 @@ from elyon_api.services.playlist_revision import (
 from elyon_api.services.schedule import find_overlaps
 
 router = APIRouter(prefix="/api", tags=["content"])
-
-admin = require_roles(Role.SUPERADMIN, Role.ORG_ADMIN, Role.SITE_MANAGER, Role.OPERATOR)
-manager = require_roles(Role.SUPERADMIN, Role.ORG_ADMIN, Role.SITE_MANAGER)
 
 
 def _playlist_visible(user: User, playlist: Playlist) -> bool:
@@ -343,7 +339,7 @@ def add_item(
 def remove_item(
     playlist_id: str,
     item_id: str,
-    user: User = Depends(manager),
+    user: User = Depends(require_permission(Permission.PLAYLIST_EDIT)),
     db: Session = Depends(get_db),
 ) -> None:
     playlist = _get_playlist(db, user, playlist_id)
@@ -445,7 +441,7 @@ def _republish_affected_devices(db: Session, playlist_id: str, settings) -> int:
             Schedule.playlist_id == playlist_id,
             Schedule.is_active.is_(True),
             Device.is_preview.is_(False),
-        )
+        ).distinct()
     ).all()
     count = 0
     for device in devices:

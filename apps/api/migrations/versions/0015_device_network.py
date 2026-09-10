@@ -8,10 +8,15 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "devices",
-        sa.Column("network_json", sa.Text(), nullable=True),
-    )
+    # Idempotent : sur une base neuve, 0001 (create_all) a déjà créé la
+    # colonne avec le schéma courant.
+    bind = op.get_bind()
+    cols = {c["name"] for c in sa.inspect(bind).get_columns("devices")}
+    if "network_json" not in cols:
+        op.add_column(
+            "devices",
+            sa.Column("network_json", sa.Text(), nullable=True),
+        )
 
 
 def downgrade() -> None:

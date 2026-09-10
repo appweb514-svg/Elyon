@@ -9,7 +9,7 @@ import time
 from typing import Any
 
 from argon2 import PasswordHasher
-from argon2.exceptions import VerificationError, VerifyMismatchError
+from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 
 _ph = PasswordHasher()
 
@@ -21,7 +21,9 @@ def hash_password(password: str) -> str:
 def verify_password(password: str, password_hash: str) -> bool:
     try:
         return _ph.verify(password_hash, password)
-    except (VerifyMismatchError, VerificationError):
+    except (VerifyMismatchError, VerificationError, InvalidHashError):
+        # Un hash corrompu/illisible vaut un échec d'authentification (401),
+        # jamais une erreur 500.
         return False
 
 

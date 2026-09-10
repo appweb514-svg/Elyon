@@ -2,18 +2,18 @@ from __future__ import annotations
 
 import datetime as dt
 import secrets
+import time
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from elyon_api.db import get_db
 from elyon_api.deps import (
     audit,
-    get_device_from_request,
     require_permission,
-    require_roles,
     require_site_access,
+    require_site_id_access,
 )
 from elyon_api.models import (
     Device,
@@ -38,9 +38,24 @@ from elyon_api.security import hash_code, hash_token, new_short_code
 
 router = APIRouter(prefix="/api", tags=["enroll"])
 
-admin = require_roles(
-    Role.SUPERADMIN, Role.ORG_ADMIN, Role.SITE_MANAGER, Role.OPERATOR, Role.VIEWER
-)
+# Limitation de débit de l'enrôlement par IP : sans elle, un code court
+# (6 caractères hexadécimaux) pouvait être brute-forcé.
+_enroll_attempts: dict[str, list[float]] = {}
+_ENROLL_WINDOW_SECONDS = 60
+
+
+def _enroll_rate_limited(ip: str, settings) -> None:
+    now = time.time()
+    for key in list(_enroll_attempts):
+        recent = [t for t in _enroll_attempts[key] if now - t < _ENROLL_WINDOW_SECONDS]
+        if recent:
+            _enroll_attempts[key] = recent
+        else:
+            del _enroll_attempts[key]
+    attempts = _enroll_attempts.setdefault(ip, [])
+    attempts.append(now)
+    if len(attempts) > settings.max_enroll_attempts_per_minute:
+        raise HTTPException(status_code=429, detail="Trop de tentatives d'enrôlement")
 
 
 def _get_site(db: Session, user: User, site_id: str) -> Site:
@@ -48,6 +63,7 @@ def _get_site(db: Session, user: User, site_id: str) -> Site:
     if site is None:
         raise HTTPException(status_code=404, detail="Site introuvable")
     require_site_access(db, user, site.org_id)
+    require_site_id_access(user, site.id)
     return site
 
 
@@ -55,7 +71,7 @@ def _get_site(db: Session, user: User, site_id: str) -> Site:
 def create_enroll_token(
     site_id: str,
     ttl_seconds: int = 600,
-    user: User = Depends(admin),
+    user: User = Depends(require_permission(Permission.DEVICE_APPROVE)),
     db: Session = Depends(get_db),
 ) -> EnrollTokenOut:
     site = _get_site(db, user, site_id)
@@ -75,8 +91,11 @@ def create_enroll_token(
 
 @router.post("/enroll/request", status_code=201)
 def enroll_request(
-    body: EnrollRequest, db: Session = Depends(get_db)
+    body: EnrollRequest, request: Request, db: Session = Depends(get_db)
 ) -> EnrollResponse:
+    settings = request.app.state.settings
+    ip = request.client.host if request.client else "unknown"
+    _enroll_rate_limited(ip, settings)
     now = dt.datetime.now(dt.UTC)
     token = db.scalar(
         select(EnrollmentToken).where(
@@ -112,9 +131,12 @@ def enroll_request(
 
 @router.get("/devices")
 def list_devices(
+    response: Response,
     site_id: str | None = None,
     status: DeviceStatus | None = None,
-    user: User = Depends(admin),
+    limit: int | None = Query(default=None, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    user: User = Depends(require_permission(Permission.DEVICE_VIEW)),
     db: Session = Depends(get_db),
 ) -> list[DeviceOut]:
     import datetime as _dt
@@ -125,10 +147,18 @@ def list_devices(
     stmt = select(Device).order_by(Device.created_at.desc())
     if user.role != Role.SUPERADMIN:
         stmt = stmt.where(Device.org_id == user.org_id)
+    if user.site_id is not None:
+        stmt = stmt.where(Device.site_id == user.site_id)
     if site_id:
         stmt = stmt.where(Device.site_id == site_id)
     if status:
         stmt = stmt.where(Device.status == status)
+    from sqlalchemy import func as _func
+
+    total = db.scalar(select(_func.count()).select_from(stmt.subquery())) or 0
+    response.headers["X-Total-Count"] = str(total)
+    if limit is not None:
+        stmt = stmt.limit(limit).offset(offset)
     devices = db.scalars(stmt)
     result = []
     for device in devices:
@@ -144,7 +174,9 @@ def list_devices(
 
 @router.get("/devices/{device_id}")
 def get_device(
-    device_id: str, user: User = Depends(admin), db: Session = Depends(get_db)
+    device_id: str,
+    user: User = Depends(require_permission(Permission.DEVICE_VIEW)),
+    db: Session = Depends(get_db),
 ) -> DeviceOut:
     import datetime as _dt
 
@@ -154,6 +186,7 @@ def get_device(
     if device is None:
         raise HTTPException(status_code=404, detail="Device introuvable")
     require_site_access(db, user, device.org_id)
+    require_site_id_access(user, device.site_id)
     out = DeviceOut.model_validate(device)
     out.screen_id = device.screen.id if device.screen else None
     try:
@@ -169,13 +202,14 @@ def get_device(
 def patch_device(
     device_id: str,
     body: DevicePatch,
-    user: User = Depends(admin),
+    user: User = Depends(require_permission(Permission.DEVICE_UPDATE)),
     db: Session = Depends(get_db),
 ) -> DeviceOut:
     device = db.get(Device, device_id)
     if device is None:
         raise HTTPException(status_code=404, detail="Device introuvable")
     require_site_access(db, user, device.org_id)
+    require_site_id_access(user, device.site_id)
     if body.name is not None:
         device.name = body.name
     if body.site_id is not None:
@@ -210,6 +244,7 @@ def approve_device(
     if device is None:
         raise HTTPException(status_code=404, detail="Device introuvable")
     require_site_access(db, user, device.org_id)
+    require_site_id_access(user, device.site_id)
     if device.status not in (
         DeviceStatus.PENDING, DeviceStatus.DISABLED, DeviceStatus.MAINTENANCE
     ):
@@ -241,6 +276,7 @@ def unblock_device(
     if device is None:
         raise HTTPException(status_code=404, detail="Device introuvable")
     require_site_access(db, user, device.org_id)
+    require_site_id_access(user, device.site_id)
     if device.status != DeviceStatus.BLOCKED:
         raise HTTPException(status_code=409, detail="Device non bloqué")
     device.status = DeviceStatus.PENDING
@@ -264,6 +300,7 @@ def block_device(
     if device is None:
         raise HTTPException(status_code=404, detail="Device introuvable")
     require_site_access(db, user, device.org_id)
+    require_site_id_access(user, device.site_id)
     device.status = DeviceStatus.BLOCKED
     device.auth_token_revoked_at = dt.datetime.now(dt.UTC)
     if device.screen:
@@ -288,6 +325,7 @@ def disable_device(
     if device is None:
         raise HTTPException(status_code=404, detail="Device introuvable")
     require_site_access(db, user, device.org_id)
+    require_site_id_access(user, device.site_id)
     if device.status == DeviceStatus.BLOCKED:
         raise HTTPException(status_code=409, detail="Device bloqué — réapprouver d'abord")
     device.status = DeviceStatus.DISABLED
@@ -313,6 +351,7 @@ def maintenance_device(
     if device is None:
         raise HTTPException(status_code=404, detail="Device introuvable")
     require_site_access(db, user, device.org_id)
+    require_site_id_access(user, device.site_id)
     device.status = DeviceStatus.MAINTENANCE
     db.commit()
     db.refresh(device)
@@ -332,6 +371,7 @@ def enable_device(
     if device is None:
         raise HTTPException(status_code=404, detail="Device introuvable")
     require_site_access(db, user, device.org_id)
+    require_site_id_access(user, device.site_id)
     if device.status not in (DeviceStatus.DISABLED, DeviceStatus.MAINTENANCE):
         raise HTTPException(status_code=409, detail="Device non désactivé")
     device.status = DeviceStatus.APPROVED
@@ -354,6 +394,7 @@ def rotate_token(
     if device is None:
         raise HTTPException(status_code=404, detail="Device introuvable")
     require_site_access(db, user, device.org_id)
+    require_site_id_access(user, device.site_id)
     raw_token = secrets.token_urlsafe(32)
     now = dt.datetime.now(dt.UTC)
     device.auth_token_hash = hash_token(raw_token)
@@ -363,17 +404,6 @@ def rotate_token(
     audit(db, "device.rotate_token", "device", device.id, user=user)
     db.commit()
     return {"device_id": device.id, "token": raw_token}
-
-
-@router.get("/devices/{device_id}/heartbeat")
-def heartbeat(
-    device: Device = Depends(get_device_from_request),
-    db: Session = Depends(get_db),
-) -> dict:
-    return {
-        "status": "ok",
-        "last_seen_at": device.last_seen_at.isoformat() if device.last_seen_at else None,
-    }
 
 
 def _event(db: Session, org_id: str, site_id: str | None, device_id: str | None,

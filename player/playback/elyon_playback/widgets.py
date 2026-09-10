@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import html as _html
 import math
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -39,9 +39,8 @@ def widget_text(widget: dict[str, Any], feed: dict[str, Any] | None, now: dateti
     if kind == "clock":
         fmt = str(params.get("format") or "HH:MM")
         if str(params.get("tz") or "site") == "utc":
-            from datetime import timezone as _tz
 
-            now = now.astimezone(_tz.utc) if now.tzinfo else datetime.now(_tz.utc)
+            now = now.astimezone(UTC) if now.tzinfo else datetime.now(UTC)
         return now.strftime("%H:%M:%S" if fmt == "HH:MM:SS" else "%H:%M")
     if kind == "weather":
         city = str(params.get("city") or "").strip() or "Météo"
@@ -150,11 +149,15 @@ def weather_icon_kind(code: object) -> str:
     return "cloud"
 
 
-_FR_DAYS = ["dim", "lun", "mar", "mer", "jeu", "ven", "sam"]
+_FR_DAYS = ["lun", "mar", "mer", "jeu", "ven", "sam", "dim"]
 
 
 def _day_label(date_str: str, index: int, now: datetime) -> str:
-    """Libellé court du jour (« lun », « mar » …) pour la prévision."""
+    """Libellé court du jour (« lun », « mar » …) pour la prévision.
+
+    `datetime.weekday()` renvoie 0 pour lundi : la table est indexée
+    lundi→dimanche (l'ancienne table dimanche→samedi décalait tous les jours).
+    """
     try:
         return _FR_DAYS[datetime.strptime(str(date_str)[:10], "%Y-%m-%d").weekday()]
     except ValueError:
@@ -230,7 +233,7 @@ def _draw_icon(draw: Any, cx: float, cy: float, r: float, kind: str) -> None:
         draw.polygon(pts, fill=bolt)
 
 
-def load_display_font(size: int):
+def load_display_font(size: int) -> Any:
     """Police d'affichage : DejaVu (accents) si présente, sinon la police PIL."""
     from PIL import ImageFont
 
@@ -260,7 +263,7 @@ def compose_widget_bar(
     if not slots:
         return None
     try:
-        from PIL import Image, ImageDraw, ImageFont
+        from PIL import Image, ImageDraw
     except ImportError:
         return None
     try:
@@ -294,16 +297,21 @@ def compose_widget_bar(
                 bbox = draw.textbbox((0, 0), text, font=font)
             except ValueError:
                 continue
-            text_w = max(bbox[2] - bbox[0], 1)
-            text_h = max(bbox[3] - bbox[1], 1)
+            text_w = int(max(bbox[2] - bbox[0], 1))
+            text_h = int(max(bbox[3] - bbox[1], 1))
             pad = max(10, font_size // 2)
             if position == "top-band":
                 bar_h = text_h + 2 * pad_y
                 draw.rounded_rectangle(
-                    (0, margin, width, margin + bar_h), radius=max(4, bar_h // 3), fill=(0, 0, 0, 178)
+                    (0, margin, width, margin + bar_h),
+                    radius=max(4, bar_h // 3),
+                    fill=(0, 0, 0, 178),
                 )
                 draw.text(
-                    ((width - text_w) // 2, margin + pad_y - bbox[1]), text, font=font, fill=(255, 255, 255, 255)
+                    ((width - text_w) // 2, margin + pad_y - bbox[1]),
+                    text,
+                    font=font,
+                    fill=(255, 255, 255, 255),
                 )
                 band_bottom = margin + bar_h
             else:  # center
@@ -319,10 +327,15 @@ def compose_widget_bar(
                     fb = draw.textbbox((0, 0), fitted, font=font)
                 except ValueError:
                     continue
-                fw, fh = fb[2] - fb[0], fb[3] - fb[1]
+                fw, fh = int(fb[2] - fb[0]), int(fb[3] - fb[1])
                 bar_w, bar_h = min(fw + 2 * pad, int(width * 0.8)), fh + 2 * pad_y
                 draw.rounded_rectangle(
-                    ((width - bar_w) // 2, (height - bar_h) // 2, (width + bar_w) // 2, (height + bar_h) // 2),
+                    (
+                        (width - bar_w) // 2,
+                        (height - bar_h) // 2,
+                        (width + bar_w) // 2,
+                        (height + bar_h) // 2,
+                    ),
                     radius=max(4, bar_h // 3),
                     fill=(0, 0, 0, 178),
                 )
@@ -340,8 +353,8 @@ def compose_widget_bar(
             bbox = draw.textbbox((0, 0), text, font=font)
         except ValueError:
             continue
-        text_w = bbox[2] - bbox[0]
-        text_h = bbox[3] - bbox[1]
+        text_w = int(bbox[2] - bbox[0])
+        text_h = int(bbox[3] - bbox[1])
         if text_w <= 0 or text_w + 2 * pad_x >= width:
             continue
         bar_h = text_h + 2 * pad_y
@@ -354,7 +367,10 @@ def compose_widget_bar(
         else:
             bar_x = margin
         # Horloge/widget haut : sous le bandeau météo s'il existe.
-        bar_y = (band_bottom + 4) if (top and band_bottom is not None) else (margin if top else height - bar_h - margin)
+        if top:
+            bar_y = (band_bottom + 4) if band_bottom is not None else margin
+        else:
+            bar_y = height - bar_h - margin
         draw.rounded_rectangle(
             (bar_x, bar_y, bar_x + bar_w, bar_y + bar_h),
             radius=max(4, bar_h // 3),
@@ -406,8 +422,8 @@ def _draw_weather_block(
         bbox1 = draw.textbbox((0, 0), line1, font=font)
     except ValueError:
         return False
-    t1_w = bbox1[2] - bbox1[0]
-    t1_h = bbox1[3] - bbox1[1]
+    t1_w = int(bbox1[2] - bbox1[0])
+    t1_h = int(bbox1[3] - bbox1[1])
     r = max(8, int(font_size * 0.7))  # rayon des icônes
     gap = max(4, font_size // 3)
     line1_w = t1_w + gap + 2 * r
@@ -421,7 +437,7 @@ def _draw_weather_block(
             bbox = draw.textbbox((0, 0), label, font=font)
         except ValueError:
             continue
-        cells.append((label, bbox[2] - bbox[0], day.get("code")))
+        cells.append((label, int(bbox[2] - bbox[0]), day.get("code")))
     cell_gap = pad_x
     line2_w = sum(2 * r + gap // 2 + cw for _, cw, _ in cells) + cell_gap * max(0, len(cells) - 1)
     block_w = max(line1_w, line2_w) + 2 * pad_x
@@ -496,8 +512,8 @@ def _draw_ticker(
         bbox = draw.textbbox((0, 0), text, font=font)
     except ValueError:
         return False
-    text_w = bbox[2] - bbox[0]
-    text_h = bbox[3] - bbox[1]
+    text_w = int(bbox[2] - bbox[0])
+    text_h = int(bbox[3] - bbox[1])
     if text_w <= 0:
         return False
     pad_y = max(4, height // 90)

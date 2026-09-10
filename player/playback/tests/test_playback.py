@@ -902,3 +902,17 @@ class TestWidgets:
         assert feed["weather"]["Paris"]["temperature"] == 10
         (tmp_path / "widgets-feed.json").write_text("pas du json", encoding="utf-8")
         assert read_widget_feed(tmp_path) is None
+
+
+def test_day_label_uses_real_weekday():
+    """Le libellé doit correspondre au vrai jour de la date ISO."""
+    from datetime import datetime
+
+    from elyon_playback.widgets import _day_label
+
+    # 2026-09-10 est un jeudi, 2026-09-13 un dimanche.
+    now = datetime(2026, 9, 10, 12, 0)
+    assert _day_label("2026-09-10", 0, now) == "jeu"
+    assert _day_label("2026-09-13", 3, now) == "dim"
+    # Date invalide → repli sur l'index à partir d'aujourd'hui.
+    assert _day_label("", 0, now) == "jeu"

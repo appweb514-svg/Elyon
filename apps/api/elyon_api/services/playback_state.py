@@ -1,24 +1,35 @@
-"""État de lecture transitoire partagé entre les routers (en mémoire)."""
+"""Auto-enchaînement de la file : état persisté sur la ligne `devices`.
+
+Contrairement à l'ancien module en mémoire, cet état est partagé par toutes
+les répliques API : un arrêt manuel sur une réplique gèle bien l'enchaînement
+pour les heartbeats traités par une autre.
+"""
+
 from __future__ import annotations
 
-import time
+import datetime as dt
 
-# device_id → (media_id, monotonic_start, seuil_secondes)
-queue_cursor: dict[str, tuple[str, float, float | None]] = {}
-# device_id → monotonic : gel de l'auto-enchaînement après un arrêt manuel
-queue_stop_guard: dict[str, float] = {}
+from elyon_api.models import Device, ensure_utc
+
+QUEUE_FREEZE_SECONDS = 30
 
 
-def mark_queue_stopped(device_id: str) -> None:
+def _now() -> dt.datetime:
+    return dt.datetime.now(dt.UTC)
+
+
+def mark_queue_stopped(device: Device) -> None:
     """Après un arrêt manuel : remise à zéro du curseur + gel 30 s.
 
     Sans ce gel, un heartbeat en retard (état « playing » périmé du player)
     relance une diffusion venant d'être arrêtée.
     """
-    queue_cursor.pop(device_id, None)
-    queue_stop_guard[device_id] = time.monotonic()
+    device.queue_started_media_id = None
+    device.queue_started_at = None
+    device.queue_stop_until = _now() + dt.timedelta(seconds=QUEUE_FREEZE_SECONDS)
 
 
-def auto_advance_allowed(device_id: str, freeze_seconds: float = 30.0) -> bool:
-    stop = queue_stop_guard.get(device_id)
-    return stop is None or time.monotonic() - stop >= freeze_seconds
+def auto_advance_allowed(device: Device) -> bool:
+    if device.queue_stop_until is None:
+        return True
+    return ensure_utc(device.queue_stop_until) <= _now()

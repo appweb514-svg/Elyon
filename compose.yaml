@@ -169,3 +169,9 @@ volumes:
   lab-enroll:
   player-1-data:
   player-2-data:
+
+networks:
+  # Réseau du reverse-proxy Dokploy (déclaré externe : il est créé par la
+  # plateforme). En local, `make dev`/`make lab` le crée s'il manque.
+  dokploy-network:
+    external: true

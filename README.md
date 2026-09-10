@@ -34,4 +34,4 @@ Elyon est un serveur central multi-utilisateur qui pilote des players Raspberry 
 
 Le lab sans matériel est décrit dans `docs/lab.md`.
 
-Statut : lots 0–14 + lab Raspberry émulé.
+Statut : lots 0–18 (widgets, équipes, déclencheurs, alertes, corbeille, révisions) + lab Raspberry émulé + player web universel.

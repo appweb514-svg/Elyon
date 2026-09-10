@@ -28,10 +28,10 @@ def _file_digest(storage: StorageBackend, path: str) -> tuple[str, int]:
     """SHA-256 et taille d'un fichier de stockage (pour intégrité côté player)."""
     digest = hashlib.sha256()
     size = 0
-    with storage.open_read(path) as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-            size += len(chunk)
+    # `iter_read` streame (S3 inclus) au lieu de charger tout le fichier.
+    for chunk in storage.iter_read(path):
+        digest.update(chunk)
+        size += len(chunk)
     return digest.hexdigest(), size
 
 
@@ -133,6 +133,7 @@ def build_manifest_payload(
         "device_id": device.id,
         "screen_id": screen.id if screen else None,
         "site_id": site.id if site else None,
+        "site_timezone": site.timezone if site else None,
         "published_at": at.isoformat(),
         "media": [_media_entry(m, storage, settings) for m in media_by_id.values()],
         "blocks": blocks,

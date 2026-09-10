@@ -8,7 +8,7 @@ import re
 import time
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
@@ -23,7 +23,6 @@ from elyon_api.deps import (
     require_roles,
     require_site_access,
 )
-from elyon_api.services import playback_state, widget_feed
 from elyon_api.models import (
     AuditLog,
     Command,
@@ -50,7 +49,11 @@ from elyon_api.schemas import (
     EventOut,
     HeartbeatIn,
 )
+from elyon_api.services import playback_state, widget_feed
 from elyon_api.services.storage import build_storage
+
+if TYPE_CHECKING:
+    from PIL import Image
 
 router = APIRouter(prefix="/api", tags=["ops"])
 
@@ -101,6 +104,8 @@ def heartbeat(
     last = ensure_utc(device.last_seen_at) if device.last_seen_at else None
     was_offline = last is None or (now - last).total_seconds() > settings.offline_grace_seconds
     first_seen = device.last_seen_at is None
+    previous_state = device.player_state
+    previous_media_id = device.current_media_id
     device.last_seen_at = now
     device.player_state = body.state
     device.current_media_id = body.current_media_id
@@ -113,7 +118,7 @@ def heartbeat(
     device.lan_ip = body.lan_ip
     device.wifi_ssid = body.wifi_ssid
     db.commit()
-    _queue_advance_if_needed(db, device)
+    _queue_advance_if_needed(db, device, settings)
     db.commit()
     if first_seen:
         _add_event(db, device.org_id, device.site_id, device.id, "device_online",
@@ -121,8 +126,8 @@ def heartbeat(
     elif was_offline:
         _add_event(db, device.org_id, device.site_id, device.id, "device_online",
                    EventLevel.INFO, f"Appareil {device.name} de retour")
-    # Proof-of-play : journaliser tout changement de média ou d'état
-    _record_playback(db, device, body)
+    # Proof-of-play : journaliser uniquement les transitions d'état/média.
+    _record_playback(db, device, body, previous_state, previous_media_id)
     db.commit()
     interval = 5 if device.is_preview else settings.heartbeat_interval_seconds
     return {
@@ -132,43 +137,44 @@ def heartbeat(
     }
 
 
-def _record_playback(db: Session, device: Device, body: HeartbeatIn) -> None:
-    """Insère un événement de lecture si l'état ou le média a changé.
+def _record_playback(
+    db: Session,
+    device: Device,
+    body: HeartbeatIn,
+    previous_state: str | None,
+    previous_media_id: str | None,
+) -> None:
+    """Insère un événement de lecture sur transition d'état ou de média.
 
-    Chaque heartbeat avec `state=playing` et un `current_media_id` différent
-    déclenche un enregistrement dans `playback_events` — base du proof-of-play.
+    Un heartbeat répété à l'identique (même état, même média) n'écrit rien :
+    sans cette déduplication, la table `playback_events` grossissait d'une
+    ligne à chaque battement (toutes les 30 s et par écran).
     """
     from elyon_api.models import PlaybackEvent as _PE
 
-    if device.current_media_id is None and body.state != "idle":
+    new_state = body.state
+    new_media_id = body.current_media_id
+    if new_state == previous_state and new_media_id == previous_media_id:
         return
-    if body.state == "idle":
-        if device.current_media_id is not None:
-            last = db.scalar(
-                select(_PE)
-                .where(_PE.device_id == device.id)
-                .order_by(_PE.recorded_at.desc())
-                .limit(1)
-            )
-            if last is not None and last.state == "playing":
-                db.add(
-                    _PE(
-                        org_id=device.org_id,
-                        device_id=device.id,
-                        media_id=device.current_media_id,
-                        state="end",
-                        recorded_at=dt.datetime.now(dt.UTC),
-                    )
-                )
-        return
-    if body.state == "playing" and device.current_media_id is not None:
+    recorded_at = dt.datetime.now(dt.UTC)
+    if previous_state == "playing" and previous_media_id is not None:
         db.add(
             _PE(
                 org_id=device.org_id,
                 device_id=device.id,
-                media_id=device.current_media_id,
+                media_id=previous_media_id,
+                state="end",
+                recorded_at=recorded_at,
+            )
+        )
+    if new_state == "playing" and new_media_id is not None:
+        db.add(
+            _PE(
+                org_id=device.org_id,
+                device_id=device.id,
+                media_id=new_media_id,
                 state="playing",
-                recorded_at=dt.datetime.now(dt.UTC),
+                recorded_at=recorded_at,
             )
         )
 
@@ -246,7 +252,12 @@ def device_widgets_feed(
     """
     if device.id != device_id:
         raise HTTPException(status_code=403, detail="Device mismatch")
-    out: dict[str, Any] = {"ticker_text": None, "ticker_speed": None, "weather_text": None}
+    out: dict[str, Any] = {
+        "ticker_text": None,
+        "ticker_speed": None,
+        "weather_text": None,
+        "weather_days": None,
+    }
     screen = device.screen
     widgets: list[dict[str, Any]] = []
     if screen is not None and screen.widgets_json:
@@ -260,7 +271,11 @@ def device_widgets_feed(
         kind = str(widget.get("type") or "")
         position = str(widget.get("position") or "")
         params = widget.get("params") or {}
-        if position == "bottom-ticker" and kind in ("ticker", "text", "rss") and not out["ticker_text"]:
+        if (
+            position == "bottom-ticker"
+            and kind in ("ticker", "text", "rss")
+            and not out["ticker_text"]
+        ):
             if kind in ("ticker", "text"):
                 out["ticker_text"] = str(params.get("text") or "") or None
                 out["ticker_speed"] = str(params.get("speed") or "normal")
@@ -273,7 +288,19 @@ def device_widgets_feed(
             city = str(params.get("city") or "").strip() or "Météo"
             entry = _widget_feed_entry("weather", params) or {}
             temp = entry.get("temperature")
-            out["weather_text"] = f"{city} · {temp:.0f}°C" if isinstance(temp, (int, float)) else city
+            if isinstance(temp, (int, float)):
+                out["weather_text"] = f"{city} · {temp:.0f}°C"
+            else:
+                out["weather_text"] = city
+            forecast = [f for f in (entry.get("forecast") or []) if isinstance(f, dict)][:4]
+            days = [
+                f"{_fr_day_label(f.get('date'), i)} "
+                f"{round(f.get('max', 0))}°/{round(f.get('min', 0))}°"
+                for i, f in enumerate(forecast)
+                if isinstance(f.get("max"), (int, float))
+                and isinstance(f.get("min"), (int, float))
+            ]
+            out["weather_days"] = "  ".join(days) or None
     return out
 
 
@@ -357,7 +384,7 @@ def queue_remove(
         db.add(cmd)
         device.current_media_id = None
         device.player_state = "idle"
-        playback_state.mark_queue_stopped(device.id)
+        playback_state.mark_queue_stopped(device)
         audit(db, "device.queue_remove_playing", "device", device.id, detail=media_id, user=user)
     else:
         audit(db, "device.queue_remove", "device", device.id, detail=media_id, user=user)
@@ -433,7 +460,7 @@ def queue_stop(
     db.add(cmd)
     device.current_media_id = None
     device.player_state = "idle"
-    playback_state.mark_queue_stopped(device.id)
+    playback_state.mark_queue_stopped(device)
     audit(db, "device.queue_stop", "device", device.id, user=user)
     db.commit()
     db.refresh(cmd)
@@ -483,7 +510,9 @@ def set_device_network(
             if not (_is_valid_ip(addr) and cidr.isdigit() and 0 <= int(cidr) <= 32):
                 raise HTTPException(status_code=400, detail="ip (CIDR) invalide")
             cfg["ip"] = ip
-        elif _is_valid_ip(ip) and (_is_valid_ip(netmask) or (netmask.isdigit() and 0 <= int(netmask) <= 32)):
+        elif _is_valid_ip(ip) and (
+            _is_valid_ip(netmask) or (netmask.isdigit() and 0 <= int(netmask) <= 32)
+        ):
             cfg["ip"] = ip
             cfg["netmask"] = netmask
         else:
@@ -673,6 +702,7 @@ def wall_media_preview(
     media = db.get(Media, media_id)
     if media is None:
         raise HTTPException(status_code=404, detail="Média introuvable")
+    require_site_access(db, user, media.org_id)
     # Le média doit être en diffusion : présent dans un manifeste publié,
     # en cours d'affichage sur un device (heartbeat), ou via « Afficher ».
     in_manifest = db.scalar(
@@ -705,7 +735,12 @@ def wall_media_preview(
 
 
 @router.get("/admin/wall/{device_id}/live")
-def wall_device_live(device_id: str, request: Request):
+def wall_device_live(
+    device_id: str,
+    request: Request,
+    user: User = Depends(require_permission(Permission.DEVICE_VIEW)),
+    db: Session = Depends(get_db),
+):
     """Flux MJPEG « vrai direct » de ce que l'écran affiche.
 
     Re-fabrique une image à partir du média en cours de lecture
@@ -717,6 +752,13 @@ def wall_device_live(device_id: str, request: Request):
     (flux MJPEG continu) plutôt qu'une frame extraite à la demande :
     l'aperçu est fluide au lieu d'un diaporama ~2 i/s.
     """
+    device = db.get(Device, device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail="Device introuvable")
+    require_site_access(db, user, device.org_id)
+    if user.site_id is not None and device.site_id != user.site_id:
+        raise HTTPException(status_code=403, detail="Hors périmètre site")
+
     import asyncio
 
     settings = request.app.state.settings
@@ -743,8 +785,8 @@ def wall_device_live(device_id: str, request: Request):
             if video is not None and _ffmpeg_available():
                 path, seek, widgets = video
                 sent = 0
-                dims = await loop.run_in_executor(
-                    None, _device_dims_from_factory, db_factory, device_id
+                dims, site_tz = await loop.run_in_executor(
+                    None, _device_widget_context_from_factory, db_factory, device_id
                 )
                 if dims:
                     dims = (min(dims[0], 1280), min(dims[1], 1280))
@@ -752,7 +794,7 @@ def wall_device_live(device_id: str, request: Request):
                     async for jpeg in _video_mjpeg_parts(path, seek):
                         if widgets:
                             jpeg = await loop.run_in_executor(
-                                None, _overlay_widgets_jpeg, jpeg, widgets, dims
+                                None, _overlay_widgets_jpeg, jpeg, widgets, dims, site_tz
                             )
                         yield _part(jpeg, "image/jpeg")
                         sent += 1
@@ -789,7 +831,7 @@ def wall_device_live(device_id: str, request: Request):
             # la première frame.
             await asyncio.sleep(10.0 if mime == "image/gif" else 0.4)
 
-    from fastapi.responses import HTMLResponse, StreamingResponse
+    from fastapi.responses import StreamingResponse
 
     return StreamingResponse(
         generate(),
@@ -919,11 +961,15 @@ def _find_player_marker(device: Device) -> tuple[Path, Path] | None:
     return None
 
 
-def _device_dims_from_factory(db_factory, device_id: str) -> tuple[int, int] | None:
-    """Taille d'écran du device, résolue DANS la session (lazy loads ok)."""
+def _device_widget_context_from_factory(
+    db_factory, device_id: str
+) -> tuple[tuple[int, int] | None, str]:
+    """(taille écran, fuseau du site) du device, résolus DANS la session."""
     with db_factory() as db:
         device = db.get(Device, device_id)
-        return _screen_dims(device) if device is not None else None
+        if device is None:
+            return None, "Europe/Paris"
+        return _screen_dims(device), _device_site_tz(device)
 
 
 def _live_video_state(
@@ -1198,7 +1244,7 @@ _video_start: dict[str, tuple[str, float]] = {}
 # Curseur + gel d'auto-enchaînement (module partagé, voir playback_state).
 
 
-def _queue_advance_if_needed(db: Session, device: Device) -> None:
+def _queue_advance_if_needed(db: Session, device: Device, settings) -> None:
     """Enchaîne automatiquement sur le média suivant de la file.
 
     Appelé à chaque heartbeat : si le média de tête est joué depuis plus
@@ -1207,34 +1253,24 @@ def _queue_advance_if_needed(db: Session, device: Device) -> None:
     """
     if device.player_state != "playing" or not device.current_media_id:
         return
-    if not playback_state.auto_advance_allowed(device.id):
+    if not playback_state.auto_advance_allowed(device):
         return
     items = _device_queue_items(device)
     if len(items) < 2 or items[0]["media_id"] != device.current_media_id:
         return
-    now = time.monotonic()
-    cursor = playback_state.queue_cursor.get(device.id)
-    if cursor is None or cursor[0] != device.current_media_id:
-        # Nouvelle lecture : calculer le seuil de durée.
-        threshold: float | None = 10.0  # image sans durée explicite
-        media = db.get(Media, device.current_media_id)
-        if media is not None and media.kind == MediaKind.VIDEO:
-            settings = None  # durée via cache ffprobe ; abs du stockage local
-            try:
-                from elyon_api.config import Settings as _S
-                from elyon_api.services.storage import LocalStorage as _LS
-                storage = _LS(_S().media_storage_root)
-                to_abs = getattr(storage, "_abs", None)
-                if to_abs is not None:
-                    threshold = _video_duration(to_abs(media.storage_path))
-            except Exception:  # noqa: BLE001
-                threshold = None
-            if threshold is None:
-                threshold = 30.0
-        playback_state.queue_cursor[device.id] = (device.current_media_id, now, threshold)
+    now = dt.datetime.now(dt.UTC)
+    if (
+        device.queue_started_media_id != device.current_media_id
+        or device.queue_started_at is None
+    ):
+        # Nouvelle lecture : mémoriser le début ; les heartbeats suivants
+        # déclencheront l'enchaînement une fois le seuil dépassé.
+        device.queue_started_media_id = device.current_media_id
+        device.queue_started_at = now
         return
-    _, started, threshold = cursor
-    if threshold is None or now - started < threshold:
+    threshold = _queue_threshold_seconds(db, device, settings)
+    started = ensure_utc(device.queue_started_at)
+    if (now - started).total_seconds() < threshold:
         return
     # Fin de lecture : rotation de la file + SHOW du suivant.
     next_id = items[1]["media_id"]
@@ -1262,8 +1298,25 @@ def _queue_advance_if_needed(db: Session, device: Device) -> None:
     db.add(cmd)
     device.current_media_id = media.id
     device.player_state = "playing"
-    playback_state.queue_cursor[device.id] = (media.id, now, 10.0)
+    device.queue_started_media_id = media.id
+    device.queue_started_at = now
     audit(db, "device.queue_auto_next", "device", device.id, detail=media.name)
+
+
+def _queue_threshold_seconds(db: Session, device: Device, settings) -> float:
+    """Durée d'affichage du média de tête (10 s image, durée réelle vidéo)."""
+    media = db.get(Media, device.current_media_id) if device.current_media_id else None
+    if media is None or media.kind != MediaKind.VIDEO:
+        return 10.0
+    duration: float | None = None
+    try:
+        storage = build_storage(settings)
+        to_abs = getattr(storage, "_abs", None)
+        if to_abs is not None:
+            duration = _video_duration(to_abs(media.storage_path))
+    except Exception:  # noqa: BLE001
+        duration = None
+    return duration if duration is not None else 30.0
 
 
 def _placeholder_png_bytes(text: str) -> bytes:
@@ -1284,11 +1337,9 @@ def _placeholder_png_bytes(text: str) -> bytes:
 def _serve_storage_file(storage, rel_path: str, mime_type: str):
     if not storage.exists(rel_path):
         raise HTTPException(status_code=404, detail="Fichier manquant")
-    from fastapi.responses import HTMLResponse, Response as _Response
+    from fastapi.responses import StreamingResponse
 
-    with storage.open_read(rel_path) as f:
-        data = f.read()
-    return _Response(content=data, media_type=mime_type)
+    return StreamingResponse(storage.iter_read(rel_path), media_type=mime_type)
 
 
 @router.get("/admin/wall")
@@ -1324,7 +1375,7 @@ def admin_wall(
                 "last_seen_at": device.last_seen_at.isoformat() if device.last_seen_at else None,
                 "screen_id": device.screen.id if device.screen else None,
                 **dict(
-                    zip(("ticker_text", "ticker_speed"), _screen_ticker(device))
+                    zip(("ticker_text", "ticker_speed"), _screen_ticker(device), strict=False)
                 ),
             }
         )
@@ -1349,12 +1400,21 @@ IDLE_SCREEN_HTML = """<!doctype html>
     animation: pan 18s ease-in-out infinite;
     color: #e2e8f0;
   }
-  @keyframes pan { 0%,100% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } }
-  .orb { position: fixed; border-radius: 50%; filter: blur(60px); opacity: .35; animation: orb 12s ease-in-out infinite; }
+  @keyframes pan {
+    0%,100% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+  }
+  .orb { position: fixed; border-radius: 50%; filter: blur(60px); opacity: .35;
+         animation: orb 12s ease-in-out infinite; }
   .orb.a { width: 24vmax; height: 24vmax; left: 8%; top: 15%; background: #0ea5e9; }
-  .orb.b { width: 30vmax; height: 30vmax; right: 10%; top: 55%; background: #6366f1; animation-delay: 3s; }
-  .orb.c { width: 20vmax; height: 20vmax; left: 45%; bottom: 10%; background: #22d3ee; animation-delay: 6s; }
-  @keyframes orb { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(24px,-18px) scale(1.15); } }
+  .orb.b { width: 30vmax; height: 30vmax; right: 10%; top: 55%; background: #6366f1;
+           animation-delay: 3s; }
+  .orb.c { width: 20vmax; height: 20vmax; left: 45%; bottom: 10%; background: #22d3ee;
+           animation-delay: 6s; }
+  @keyframes orb {
+    0%,100% { transform: translate(0,0) scale(1); }
+    50% { transform: translate(24px,-18px) scale(1.15); }
+  }
   h1 { font-size: clamp(20px, 4vw, 48px); font-weight: 600; letter-spacing: .04em;
        animation: pulse 3.2s ease-in-out infinite; }
   @keyframes pulse { 0%,100% { opacity: .65; } 50% { opacity: 1; } }
@@ -1362,7 +1422,9 @@ IDLE_SCREEN_HTML = """<!doctype html>
             background: rgba(0,0,0,.7); padding: .6rem 1rem; font-size: 16px; white-space: nowrap; }
   .ticker span { display: inline-block; position: relative; animation: slide 14s linear infinite; }
   @keyframes slide { from { left: -100%; } to { left: 100%; } }
-  @media (prefers-reduced-motion: reduce) { body, .orb, h1, .ticker span { animation: none !important; } }
+  @media (prefers-reduced-motion: reduce) {
+    body, .orb, h1, .ticker span { animation: none !important; }
+  }
 </style>
 </head>
 <body>
@@ -1374,16 +1436,26 @@ IDLE_SCREEN_HTML = """<!doctype html>
 """
 
 
-_widget_feed_cache: dict[str, tuple[dict[str, Any], float]] = {}
+_WIDGET_FEED_TTL = 300
+_WIDGET_FEED_ERROR_TTL = 60
+# clé → (valeur, horodatage monotonic, ok)
+_widget_feed_cache: dict[str, tuple[dict[str, Any] | None, float, bool]] = {}
 
 
 def _widget_feed_entry(kind: str, params: dict[str, Any]) -> dict[str, Any] | None:
-    """Donnée de widget (météo/RSS) avec cache 5 min, jamais bloquante."""
+    """Donnée de widget (météo/RSS) avec cache, jamais bloquante.
+
+    Succès : cache 5 min. Échec : cache court (60 s) — sans lui, un flux
+    cassé était re-téléchargé à chaque frame d'aperçu. On conserve la
+    dernière valeur connue pour ne pas vider l'affichage pendant la panne.
+    """
     key = kind + ":" + str(params.get("city") or params.get("url") or "")
     cached = _widget_feed_cache.get(key)
     now = time.monotonic()
-    if cached and now - cached[1] < 300:
-        return cached[0]
+    if cached is not None:
+        value, stored_at, ok = cached
+        if now - stored_at < (_WIDGET_FEED_TTL if ok else _WIDGET_FEED_ERROR_TTL):
+            return value
     data: dict[str, Any] | None = None
     try:
         if kind == "weather":
@@ -1392,9 +1464,14 @@ def _widget_feed_entry(kind: str, params: dict[str, Any]) -> dict[str, Any] | No
             data = widget_feed.fetch_rss(str(params.get("url") or ""))
     except Exception:  # noqa: BLE001 — un feed indisponible ne casse pas l'aperçu
         data = None
-    if data is not None:
-        _widget_feed_cache[key] = (data, now)
-    return cached[0] if (data is None and cached) else data
+    if len(_widget_feed_cache) > 256:
+        _widget_feed_cache.clear()
+    if data is None:
+        stale = cached[0] if cached is not None else None
+        _widget_feed_cache[key] = (stale, now, False)
+        return stale
+    _widget_feed_cache[key] = (data, now, True)
+    return data
 
 
 def _device_widgets(device: Device) -> list[dict[str, Any]]:
@@ -1442,7 +1519,7 @@ def _screen_dims(device: Device) -> tuple[int, int] | None:
         return None
 
 
-def _fit_on_canvas(img: "Image.Image", width: int, height: int) -> "Image.Image":
+def _fit_on_canvas(img: Image.Image, width: int, height: int) -> Image.Image:
     """Cadre le média dans la taille de l'écran (object-contain, fond noir).
 
     Les widgets sont ensuite composés sur ce canevas : taille et position
@@ -1469,14 +1546,14 @@ def _device_site_tz(device: Device) -> str:
 
 
 def _compose_widget_bar_server(
-    img: "Image.Image", widgets: list[dict[str, Any]], site_tz: str = "Europe/Paris"
-) -> "Image.Image":
+    img: Image.Image, widgets: list[dict[str, Any]], site_tz: str = "Europe/Paris"
+) -> Image.Image:
     """Incruste les widgets d'information sur une image (aperçu serveur).
 
     Version légère du rendu du player : météo, horloge, texte, ticker
     défilant (animé d'une frame à l'autre via l'horodatage).
     """
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image, ImageDraw
 
     if not widgets:
         return img
@@ -1499,10 +1576,14 @@ def _compose_widget_bar_server(
             city = str(params.get("city") or "").strip() or "Météo"
             entry = _widget_feed_entry("weather", params) or {}
             temp = entry.get("temperature")
-            line1 = f"{city} · {temp:.0f}°C" if isinstance(temp, (int, float)) else city
+            if isinstance(temp, (int, float)):
+                line1 = f"{city} · {temp:.0f}°C"
+            else:
+                line1 = city
             fc = entry.get("forecast") or []
             line2 = "  ".join(
-                f"{FR_DAYS_W[i]} {round(f.get('max', 0))}°/{round(f.get('min', 0))}°"
+                f"{_fr_day_label(f.get('date'), i)} "
+                f"{round(f.get('max', 0))}°/{round(f.get('min', 0))}°"
                 for i, f in enumerate(fc[:4])
                 if isinstance(f, dict)
             )
@@ -1510,9 +1591,8 @@ def _compose_widget_bar_server(
         elif kind == "clock":
             fmt = str(params.get("format") or "HH:MM")
             if str(params.get("tz") or "site") == "utc":
-                from datetime import timezone as _tz
 
-                now_w = dt.datetime.now(_tz.utc)
+                now_w = dt.datetime.now(dt.UTC)
             else:
                 try:
                     from zoneinfo import ZoneInfo
@@ -1533,16 +1613,16 @@ def _compose_widget_bar_server(
             continue
         font_size = int(base_size * scale)
         font = _load_display_font(font_size)
-        small = _load_display_font(max(11, int(small_size * scale)))
         if position == "bottom-ticker":
-            _draw_server_ticker(draw, img, text, font, max(11, int(small_size * scale)), now, height)
+            ticker_font_size = max(11, int(small_size * scale))
+            _draw_server_ticker(draw, img, text, font, ticker_font_size, now, height)
             continue
         f = font
         try:
             bbox = draw.multiline_textbbox((0, 0), text, font=f)
         except Exception:  # noqa: BLE001
             continue
-        text_w, text_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        text_w, text_h = int(bbox[2] - bbox[0]), int(bbox[3] - bbox[1])
         if text_w <= 0:
             continue
         bar_w, bar_h = text_w + 2 * pad_x, text_h + 2 * pad_y
@@ -1551,7 +1631,10 @@ def _compose_widget_bar_server(
                 (0, margin, width, margin + bar_h), radius=max(4, bar_h // 3), fill=(0, 0, 0, 178)
             )
             draw.multiline_text(
-                ((width - text_w) // 2, margin + pad_y - bbox[1]), text, font=f, fill=(255, 255, 255, 255)
+                ((width - text_w) // 2, margin + pad_y - bbox[1]),
+                text,
+                font=f,
+                fill=(255, 255, 255, 255),
             )
             band_bottom = margin + bar_h
             continue
@@ -1568,7 +1651,7 @@ def _compose_widget_bar_server(
                 fb = draw.multiline_textbbox((0, 0), fitted, font=f)
             except Exception:  # noqa: BLE001
                 continue
-            fw, fh = fb[2] - fb[0], fb[3] - fb[1]
+            fw, fh = int(fb[2] - fb[0]), int(fb[3] - fb[1])
             draw.rounded_rectangle(
                 ((width - fw) // 2 - pad_x, (height - fh) // 2 - pad_y,
                  (width + fw) // 2 + pad_x, (height + fh) // 2 + pad_y),
@@ -1588,32 +1671,47 @@ def _compose_widget_bar_server(
         else:
             bar_x = margin
         # Horloge/widget haut : sous le bandeau météo s'il existe.
-        bar_y = (band_bottom + 4) if (top and band_bottom is not None) else (margin if top else height - bar_h - margin)
+        if top:
+            bar_y = (band_bottom + 4) if band_bottom is not None else margin
+        else:
+            bar_y = height - bar_h - margin
         draw.rounded_rectangle(
             (bar_x, bar_y, bar_x + bar_w, bar_y + bar_h),
             radius=max(4, bar_h // 3),
             fill=(0, 0, 0, 178),
         )
         draw.multiline_text(
-            (bar_x + pad_x - bbox[0], bar_y + pad_y - bbox[1]), text, font=f, fill=(255, 255, 255, 255)
+            (bar_x + pad_x - bbox[0], bar_y + pad_y - bbox[1]),
+            text,
+            font=f,
+            fill=(255, 255, 255, 255),
         )
     from PIL import Image as _Image
 
     return _Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
 
 
-FR_DAYS_W = ["dim", "lun", "mar", "mer", "jeu", "ven", "sam"]
+# Table lundi→dimanche : datetime.weekday() renvoie 0 pour lundi.
+FR_DAYS_W = ["lun", "mar", "mer", "jeu", "ven", "sam", "dim"]
 
 
-def re_sub_html(raw: str) -> str:
-    import html as _html
-    import re as _re
-
-    return _html.unescape(_re.sub(r"<[^>]+>", " ", raw))
+def _fr_day_label(date_str: object, index: int) -> str:
+    """Libellé court du jour d'une date ISO (fallback : index de prévision)."""
+    try:
+        parsed = dt.datetime.strptime(str(date_str)[:10], "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return FR_DAYS_W[index % 7]
+    return FR_DAYS_W[parsed.weekday()]
 
 
 def _draw_server_ticker(
-    draw: Any, img: "Image.Image", text: str, font: Any, small_size: int, now: dt.datetime, height: int
+    draw: Any,
+    img: Image.Image,
+    text: str,
+    font: Any,
+    small_size: int,
+    now: dt.datetime,
+    height: int,
 ) -> None:
     width = img.size[0]
     bar_h = max(18, height // 22)
@@ -1624,7 +1722,8 @@ def _draw_server_ticker(
         tw = len(text) * small_size
     offset = (now.timestamp() * 60) % max(tw + width, 1)
     x = width - offset
-    draw.text((x, height - bar_h + (bar_h - small_size) // 2 - 2), text, font=font, fill=(255, 255, 255, 255))
+    text_y = height - bar_h + (bar_h - small_size) // 2 - 2
+    draw.text((x, text_y), text, font=font, fill=(255, 255, 255, 255))
     if x + tw < width:
         draw.text(
             (x + tw + width // 10, height - bar_h + (bar_h - small_size) // 2 - 2),
@@ -1633,7 +1732,10 @@ def _draw_server_ticker(
 
 
 def _overlay_widgets_jpeg(
-    jpeg: bytes, widgets: list[dict[str, Any]], dims: tuple[int, int] | None = None
+    jpeg: bytes,
+    widgets: list[dict[str, Any]],
+    dims: tuple[int, int] | None = None,
+    site_tz: str = "Europe/Paris",
 ) -> bytes:
     """Applique la barre de widgets sur une frame JPEG (aperçu vidéo).
 
@@ -1650,7 +1752,7 @@ def _overlay_widgets_jpeg(
         img = Image.open(_io.BytesIO(jpeg)).convert("RGB")
         if dims:
             img = _fit_on_canvas(img, dims[0], dims[1])
-        composed = _compose_widget_bar_server(img, widgets)
+        composed = _compose_widget_bar_server(img, widgets, site_tz)
         composed.thumbnail((1280, 1280))
         out = _io.BytesIO()
         composed.save(out, "JPEG", quality=70)
@@ -1870,7 +1972,9 @@ def dashboard(
         1 for d in devices if _device_status(d, now, settings.offline_grace_seconds) == "online"
     )
     pending = sum(1 for d in devices if d.status == DeviceStatus.PENDING)
-    media_filter = [] if user.role == Role.SUPERADMIN else [Media.org_id == user.org_id]
+    media_filter: list[Any] = [Media.deleted_at.is_(None)]
+    if user.role != Role.SUPERADMIN:
+        media_filter.append(Media.org_id == user.org_id)
     media_count = db.scalar(select(func.count()).select_from(Media).where(*media_filter))
     media_ready = db.scalar(
         select(func.count())

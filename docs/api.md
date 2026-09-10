@@ -34,18 +34,17 @@ Voir `docs/rbac.md` pour le mapping rôle → permissions.
 
 | Méthode | Route | Permission / Auth | Description |
 |---|---|---|---|
-| POST | `/enroll/tokens?site_id=&ttl_seconds=` | `device.view` | Jeton à usage unique (code 6 caractères) |
+| POST | `/enroll/tokens?site_id=&ttl_seconds=` | `device.approve` | Jeton à usage unique (code 6 caractères), rate-limité par IP |
 | POST | `/enroll/request` | — (public) | Enrôlement : serial + name + site_code |
-| GET | `/devices` | `device.view` | Liste (computed_status : pending/approved/online/offline/syncing/maintenance/disabled/blocked) |
+| GET | `/devices?limit=&offset=` | `device.view` | Liste paginable (`X-Total-Count`), scopée org/site (computed_status : pending/approved/online/offline/syncing/maintenance/disabled/blocked) |
 | GET | `/devices/{id}` | `device.view` | Détail (+ computed_status) |
-| PATCH | `/devices/{id}` | `device.view` | Nom, site |
+| PATCH | `/devices/{id}` | `device.update` | Nom, site, aperçu, écran |
 | POST | `/devices/{id}/approve` | `device.approve` | Approbation |
 | POST | `/devices/{id}/disable` | `device.disable` | Désactivation (→ disabled) |
 | POST | `/devices/{id}/maintenance` | `device.disable` | Maintenance |
 | POST | `/devices/{id}/enable` | `device.approve` | Réactivation |
 | POST | `/devices/{id}/block` | `device.disable` | Blocage + révocation token |
 | POST | `/devices/{id}/rotate-token` | `device.update` | Rotation Bearer |
-| GET | `/devices/{id}/heartbeat` | Bearer device | Heartbeat device |
 | GET | `/admin/devices/{id}/heartbeat` | `device.view` (admin) | Supervision heartbeat sans Bearer |
 | GET | `/admin/devices/{id}/commands` | `device.view` | Historique commandes (admin) |
 | GET | `/admin/devices/{id}/manifest` | `device.view` | Aperçu manifeste sans Bearer |
@@ -64,7 +63,7 @@ Voir `docs/rbac.md` pour le mapping rôle → permissions.
 | Méthode | Route | Permission | Description |
 |---|---|---|
 | POST | `/media?name=` | `media.upload` | Upload multipart (image/vidéo/PDF), quota personnel |
-| GET | `/media` · `/media/{id}` | `media.view` | Liste, détail (kind, sha256, dimensions…) |
+| GET | `/media?limit=&offset=` · `/media/{id}` | `media.view` | Liste paginable (`X-Total-Count`), détail (kind, sha256, dimensions…). Fichiers servis en streaming (Range supporté) |
 | POST | `/media/{id}/show` | `device.command` | Afficher immédiatement sur un Raspberry (`{device_id, duration_seconds?}`) |
 | POST | `/media/{id}/playlists/{playlist_id}` | `playlist.edit` | Ajouter le média en fin de playliste |
 | GET | `/media/{id}/file` | Bearer device | Fichier original (supporte Range) |

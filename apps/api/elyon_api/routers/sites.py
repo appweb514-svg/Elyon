@@ -150,6 +150,11 @@ def create_screen(
     if db.scalar(select(Screen).where(Screen.site_id == site.id, Screen.name == body.name)):
         raise HTTPException(status_code=409, detail="Écran déjà existant")
     if body.device_id:
+        from elyon_api.permissions import Permission as _Perm
+        from elyon_api.permissions import has_permission as _has_perm
+
+        if not _has_perm(user.role, _Perm.SCREEN_ASSIGN):
+            raise HTTPException(status_code=403, detail="Permission manquante")
         device = db.get(Device, body.device_id)
         if device is None or device.org_id != site.org_id:
             raise HTTPException(status_code=400, detail="Device invalide")

@@ -45,20 +45,15 @@ def require_same_org(db: Session, user: User, org_id: str | None) -> None:
 
 
 def require_site_access(db: Session, user: User, site_org_id: str | None) -> None:
+    """Vérifie le périmètre organisation ; le périmètre site est contrôlé
+    séparément par `require_site_id_access` quand la ressource en a un."""
     if user.role == Role.SUPERADMIN:
         return
     if site_org_id is None or site_org_id != user.org_id:
-        raise HTTPException(status_code=403, detail="Hors périmètre site")
-    # SITE_MANAGER/OPERATOR/VIEWER scopés à un site précis si user.site_id renseigné
-    if user.site_id is not None:
-        # Le site doit appartenir à l'org déjà vérifié ; on vérifie que le user
-        # n'accède qu'à son site. Le caller passe site_org_id = site.org_id, pas site.id ;
-        # on ne peut pas vérifier site.id ici sans paramètre supplémentaire —
-        # la vérification fine se fait dans les routers via require_site_id_access.
-        pass
+        raise HTTPException(status_code=403, detail="Hors périmètre organisation")
 
 
-def require_site_id_access(user: User, site_id: str) -> None:
+def require_site_id_access(user: User, site_id: str | None) -> None:
     """Vérifie que l'utilisateur scopé site n'accède qu'à son site."""
     if user.role == Role.SUPERADMIN:
         return
@@ -101,8 +96,6 @@ def compute_device_status(
     device: Device,
     now: dt.datetime,
     grace_seconds: int,
-    manifest: object = None,
-    current_media_id: str | None = None,
 ) -> str:
     """Statut dérivé : pending/approved/disabled/maintenance + online/offline/syncing."""
     if device.status == DeviceStatus.PENDING:

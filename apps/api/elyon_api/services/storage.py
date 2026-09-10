@@ -2,14 +2,24 @@ from __future__ import annotations
 
 import os
 import shutil
+from collections.abc import Iterator
 from pathlib import Path
 from typing import BinaryIO, Protocol
 
 from elyon_api.config import Settings
 
+DEFAULT_CHUNK_SIZE = 1024 * 1024
+
 
 class StorageBackend(Protocol):
     def open_read(self, path: str) -> BinaryIO: ...
+    def iter_read(
+        self,
+        path: str,
+        start: int = 0,
+        end: int | None = None,
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
+    ) -> Iterator[bytes]: ...
     def write(self, path: str, data: BinaryIO) -> None: ...
     def append(self, path: str, data: bytes) -> None: ...
     def size(self, path: str) -> int: ...
@@ -24,13 +34,41 @@ class LocalStorage:
         self.root = root
 
     def _abs(self, path: str) -> Path:
-        target = (self.root / path).resolve()
-        if not str(target).startswith(str(self.root.resolve())):
+        root = self.root.resolve()
+        target = (root / path).resolve()
+        # `str.startswith` est insuffisant : « /data/media-evil » commence par
+        # « /data/media ». On compare des chemins, pas des chaînes.
+        if target != root and not target.is_relative_to(root):
             raise ValueError("Chemin hors racine de stockage")
         return target
 
     def open_read(self, path: str) -> BinaryIO:
         return self._abs(path).open("rb")
+
+    def iter_read(
+        self,
+        path: str,
+        start: int = 0,
+        end: int | None = None,
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
+    ) -> Iterator[bytes]:
+        """Lit le fichier par blocs (streaming HTTP, conversion média)."""
+        target = self._abs(path)
+        total = target.stat().st_size
+        if end is None or end >= total:
+            end = total - 1
+        remaining = end - start + 1
+        if remaining <= 0:
+            return
+        with target.open("rb") as handle:
+            if start:
+                handle.seek(start)
+            while remaining > 0:
+                data = handle.read(min(chunk_size, remaining))
+                if not data:
+                    break
+                remaining -= len(data)
+                yield data
 
     def write(self, path: str, data: BinaryIO) -> None:
         target = self._abs(path)
@@ -90,7 +128,31 @@ class S3Storage:
         import io
 
         body = self.client.get_object(Bucket=self.bucket, Key=path)["Body"]
-        return io.BytesIO(body.read())
+        try:
+            return io.BytesIO(body.read())
+        finally:
+            body.close()
+
+    def iter_read(
+        self,
+        path: str,
+        start: int = 0,
+        end: int | None = None,
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
+    ) -> Iterator[bytes]:
+        """Streaming direct depuis S3 (sans charger tout l'objet en mémoire)."""
+        kwargs: dict[str, str] = {}
+        if start or end is not None:
+            kwargs["Range"] = f"bytes={start}-" + ("" if end is None else str(end))
+        body = self.client.get_object(Bucket=self.bucket, Key=path, **kwargs)["Body"]
+        try:
+            while True:
+                data = body.read(chunk_size)
+                if not data:
+                    break
+                yield data
+        finally:
+            body.close()
 
     def write(self, path: str, data: BinaryIO) -> None:
         self.client.upload_fileobj(data, self.bucket, path)

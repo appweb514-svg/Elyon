@@ -27,10 +27,16 @@ type Manifest = {
   media: ManifestMedia[];
   blocks: ManifestBlock[];
   widgets: Array<Record<string, unknown>> | null;
+  site_timezone?: string | null;
 };
 
 type QueueItem = { media_id: string; kind: string; name: string; duration: number | null };
-type WidgetFeed = { ticker_text: string | null; ticker_speed: string | null; weather_text: string | null };
+type WidgetFeed = {
+  ticker_text: string | null;
+  ticker_speed: string | null;
+  weather_text: string | null;
+  weather_days: string | null;
+};
 
 function load(): Stored | null {
   try {
@@ -103,7 +109,7 @@ export default function PlayerPage() {
       const res = await fetch(`/api/devices/${s.device_id}/heartbeat`, {
         method: "POST",
         headers: { Authorization: `Bearer ${s.token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ player_state: playerState, current_media_id: mediaId }),
+        body: JSON.stringify({ state: playerState, current_media_id: mediaId }),
       });
       return res.ok;
     } catch {
@@ -201,17 +207,21 @@ export default function PlayerPage() {
   if (!booted) return null;
 
   const widgets = manifest?.widgets ?? [];
+  const siteTimezone = manifest?.site_timezone ?? null;
   const ticker = widgets.find((w) => w.position === "bottom-ticker");
-  const center = widgets.find((w) => w.position === "center");
-  const clock = widgets.find((w) => w.position === "top-right");
   const idleTicker =
     ticker && String(ticker.type) === "rss" ? feed?.ticker_text ?? "" : tickerText(ticker);
+  const idleWeather = widgets.find((w) => w.position === "top-band");
+  const idleClock = widgets.find((w) => w.position === "top-right");
+  const idleWeatherText = idleWeather
+    ? feed?.weather_text ?? `${String(((idleWeather.params ?? {}) as Record<string, unknown>)?.city ?? "Météo")}`
+    : null;
 
   return (
     <div className="fixed inset-0 bg-black text-white" style={{ overflow: "hidden" }}>
       {/* Kiosque */}
       {stored && !pendingApproval && (
-        <KioskScreen stored={stored} status={status} widgets={widgets} feed={feed} />
+        <KioskScreen status={status} widgets={widgets} feed={feed} siteTimezone={siteTimezone} />
       )}
 
       {/* Écran d'attente */}
@@ -220,6 +230,19 @@ export default function PlayerPage() {
           <span className="elyon-idle-orb left-[8%] top-[15%] h-40 w-40 bg-sky-500" />
           <span className="elyon-idle-orb right-[10%] top-[55%] h-56 w-56 bg-indigo-500" style={{ animationDelay: "3s" }} />
           <span className="elyon-idle-orb bottom-[10%] left-[45%] h-32 w-32 bg-cyan-400" style={{ animationDelay: "6s" }} />
+          {idleWeatherText && (
+            <div className="absolute left-0 right-0 top-0 z-10 rounded-b-lg bg-black/60 px-4 py-2 text-center text-xl font-medium">
+              {idleWeatherText}
+              {feed?.weather_days && (
+                <span className="block text-sm text-slate-300">{feed.weather_days}</span>
+              )}
+            </div>
+          )}
+          <ClockWidget
+            widget={idleClock}
+            siteTimezone={siteTimezone}
+            className="absolute right-6 top-16 z-10 rounded-lg bg-black/60 px-4 py-2 text-3xl font-semibold"
+          />
           <span className="elyon-idle-text text-3xl font-semibold tracking-wide">
             Affichage en préparation
           </span>
@@ -238,6 +261,7 @@ export default function PlayerPage() {
               <input
                 className="mb-2 w-full rounded-md bg-slate-800 px-3 py-2 outline-none"
                 placeholder="Code du site (ex. 7DF6D2)"
+                aria-label="Code du site"
                 value={pairCode}
                 maxLength={8}
                 onChange={(e) => setPairCode(e.target.value)}
@@ -245,6 +269,7 @@ export default function PlayerPage() {
               <input
                 className="mb-3 w-full rounded-md bg-slate-800 px-3 py-2 outline-none"
                 placeholder="Nom de l'écran (optionnel)"
+                aria-label="Nom de l'écran (optionnel)"
                 value={pairName}
                 onChange={(e) => setPairName(e.target.value)}
               />
@@ -316,40 +341,80 @@ async function playItem(s: Stored, item: QueueItem, alive: () => boolean): Promi
   void alive;
 }
 
+function formatClock(
+  date: Date,
+  format: string,
+  tzMode: string,
+  siteTimezone: string | null
+): string {
+  const hasSeconds = format === "HH:MM:SS";
+  if (tzMode === "utc" || siteTimezone) {
+    try {
+      const parts = new Intl.DateTimeFormat("fr-FR", {
+        hour: "2-digit",
+        minute: "2-digit",
+        ...(hasSeconds ? { second: "2-digit" } : {}),
+        hour12: false,
+        timeZone: tzMode === "utc" ? "UTC" : siteTimezone ?? "UTC",
+      }).formatToParts(date);
+      const get = (type: string) => parts.find((part) => part.type === type)?.value ?? "";
+      const hour = get("hour") === "24" ? "00" : get("hour");
+      return hasSeconds
+        ? `${hour}:${get("minute")}:${get("second")}`
+        : `${hour}:${get("minute")}`;
+    } catch {
+      // Fuseau inconnu du navigateur : on retombe sur l'heure locale.
+    }
+  }
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mm = String(date.getMinutes()).padStart(2, "0");
+  const ss = String(date.getSeconds()).padStart(2, "0");
+  return hasSeconds ? `${hh}:${mm}:${ss}` : `${hh}:${mm}`;
+}
+
+/** Horloge de widget : heure du site (fuseau du manifeste) ou UTC. */
+function ClockWidget({
+  widget,
+  siteTimezone,
+  className,
+}: {
+  widget: Record<string, unknown> | undefined;
+  siteTimezone: string | null;
+  className: string;
+}) {
+  const [clock, setClock] = useState("");
+  const format = String(((widget?.params ?? {}) as Record<string, unknown>)?.format ?? "HH:MM");
+  const tzMode = String(((widget?.params ?? {}) as Record<string, unknown>)?.tz ?? "site");
+  useEffect(() => {
+    if (!widget) {
+      setClock("");
+      return;
+    }
+    const tick = () => setClock(formatClock(new Date(), format, tzMode, siteTimezone));
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [widget, format, tzMode, siteTimezone]);
+  if (!widget || !clock) return null;
+  return <div className={className}>{clock}</div>;
+}
+
 function KioskScreen({
-  stored,
   status,
   widgets,
   feed,
+  siteTimezone,
 }: {
-  stored: Stored;
   status: string;
   widgets: Array<Record<string, unknown>>;
   feed: WidgetFeed | null;
+  siteTimezone: string | null;
 }) {
-  const [clock, setClock] = useState("");
-  useEffect(() => {
-    const w = widgets.find((x) => x.position === "top-right");
-    if (!w) return;
-    const fmt = String((w.params as Record<string, unknown>)?.format ?? "HH:MM");
-    const utc = String((w.params as Record<string, unknown>)?.tz ?? "site") === "utc";
-    const tick = () => {
-      const d = new Date();
-      const hh = String(utc ? d.getUTCHours() : d.getHours()).padStart(2, "0");
-      const mm = String(utc ? d.getUTCMinutes() : d.getMinutes()).padStart(2, "0");
-      const ss = String(utc ? d.getUTCSeconds() : d.getSeconds()).padStart(2, "0");
-      setClock(fmt === "HH:MM:SS" ? `${hh}:${mm}:${ss}` : `${hh}:${mm}`);
-    };
-    tick();
-    const h = setInterval(tick, 1000);
-    return () => clearInterval(h);
-  }, [widgets]);
-
   const ticker = widgets.find((x) => x.position === "bottom-ticker");
   const weather = widgets.find((x) => x.position === "top-band");
   const center = widgets.find((x) => x.position === "center");
-  const hasClock = widgets.some((x) => x.position === "top-right");
-  const hasWeatherBand = widgets.some((x) => x.position === "top-band");
+  const clockWidget = widgets.find((x) => x.position === "top-right");
+  const hasWeatherBand = weather !== undefined;
   const centerText = String(((center?.params ?? {}) as Record<string, unknown>)?.text ?? "");
   const tickerVal =
     ticker && String(ticker.type) === "rss" ? feed?.ticker_text ?? "" : tickerText(ticker);
@@ -365,22 +430,25 @@ function KioskScreen({
         <div className="elyon-idle absolute inset-0 flex flex-col items-center justify-center gap-4">
           <span className="elyon-idle-orb left-[8%] top-[15%] h-40 w-40 bg-sky-500" />
           <span className="elyon-idle-orb right-[10%] top-[55%] h-56 w-56 bg-indigo-500" style={{ animationDelay: "3s" }} />
+          <span className="elyon-idle-orb bottom-[10%] left-[45%] h-32 w-32 bg-cyan-400" style={{ animationDelay: "6s" }} />
           <span className="elyon-idle-text text-3xl font-semibold tracking-wide">Affichage en préparation</span>
         </div>
       )}
       {weatherText && (
         <div className="absolute left-0 right-0 top-0 z-10 rounded-b-lg bg-black/60 px-4 py-2 text-center text-2xl font-medium">
           {weatherText}
+          {feed?.weather_days && (
+            <span className="block text-sm text-slate-300">{feed.weather_days}</span>
+          )}
         </div>
       )}
-      {hasClock && clock && (
-        <div
-          className="absolute right-6 z-10 rounded-lg bg-black/60 px-4 py-2 text-4xl font-semibold"
-          style={{ top: hasWeatherBand ? "4.5rem" : "1rem" }}
-        >
-          {clock}
-        </div>
-      )}
+      <ClockWidget
+        widget={clockWidget}
+        siteTimezone={siteTimezone}
+        className={`absolute right-6 z-10 rounded-lg bg-black/60 px-4 py-2 text-4xl font-semibold ${
+          hasWeatherBand ? "top-20" : "top-4"
+        }`}
+      />
       {centerText && (
         <div className="absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 rounded-xl bg-black/70 px-8 py-4 text-3xl font-semibold">
           {centerText}

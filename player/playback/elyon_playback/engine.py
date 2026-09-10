@@ -363,6 +363,8 @@ class PlaybackEngine:
                 gradient = Image.new("RGB", (width, height))
                 top, bottom = (15, 23, 42), (30, 27, 75)
                 px = gradient.load()
+                if px is None:
+                    return
                 for y in range(height):
                     t = y / max(height - 1, 1)
                     r = int(top[0] + (bottom[0] - top[0]) * t)

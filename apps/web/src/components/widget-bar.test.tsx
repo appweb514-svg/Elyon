@@ -80,7 +80,7 @@ describe("WidgetBar", () => {
     expect(clock).toMatchObject({ type: "clock", position: "top-right", locked: true });
   });
 
-  it("désactive la barre du haut : retire météo et horloge", () => {
+  it("désactive la barre du haut : masque météo et horloge sans perdre la config", () => {
     const onChange = vi.fn();
     render(
       <WidgetBar
@@ -97,8 +97,44 @@ describe("WidgetBar", () => {
     expect(screen.getByTestId("top-bar-toggle").getAttribute("aria-checked")).toBe("true");
     fireEvent.click(screen.getByTestId("top-bar-toggle"));
     const next = onChange.mock.calls[0][0] as Widget[];
-    expect(next).toHaveLength(1);
-    expect(next[0].type).toBe("text");
+    expect(next).toHaveLength(3);
+    const weather = next.find((w) => w.type === "weather");
+    const clock = next.find((w) => w.type === "clock");
+    expect(weather).toMatchObject({ visible: false, params: { city: "Paris" } });
+    expect(clock).toMatchObject({ visible: false, params: { format: "HH:MM" } });
+  });
+
+  it("réactive la barre du haut : restaure les paramètres existants", () => {
+    const onChange = vi.fn();
+    render(
+      <WidgetBar
+        widgets={[
+          { type: "weather", position: "top-band", visible: false, locked: true, params: { city: "Lyon", size: "large" } },
+          { type: "clock", position: "top-right", visible: false, locked: true, params: { format: "HH:MM:SS", size: "medium" } },
+        ]}
+        onChange={onChange}
+        openId={null}
+        onOpenChange={() => undefined}
+      />
+    );
+    expect(screen.getByTestId("top-bar-toggle").getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(screen.getByTestId("top-bar-toggle"));
+    const next = onChange.mock.calls[0][0] as Widget[];
+    expect(next).toHaveLength(2);
+    expect(next[0]).toMatchObject({ visible: true, params: { city: "Lyon", size: "large" } });
+    expect(next[1]).toMatchObject({ visible: true, params: { format: "HH:MM:SS" } });
+  });
+
+  it("désactive les boutons d'ajout quand 3 widgets sont présents", () => {
+    render(
+      <WidgetBar
+        widgets={[baseWidget(), baseWidget({ type: "clock" }), baseWidget({ type: "rss" })]}
+        onChange={() => undefined}
+        openId={null}
+        onOpenChange={() => undefined}
+      />
+    );
+    expect(screen.getByRole("button", { name: /Météo/ }).hasAttribute("disabled")).toBe(true);
   });
 
   it("active la barre du bas : ticker RSS pleine largeur verrouillé", () => {

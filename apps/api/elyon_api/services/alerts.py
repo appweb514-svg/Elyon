@@ -12,7 +12,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-from elyon_api.models import Device, DeviceStatus
+from elyon_api.models import Device, DeviceStatus, ensure_utc
 
 # Fenêtres d'anti-spam (en secondes)
 _OFFLINE_DEDUP_WINDOW = 2 * 3600  # 2 h entre deux notifications pour un device
@@ -62,7 +62,6 @@ def sweep_offline_alerts(factory: sessionmaker, settings) -> int:
         return 0
     now = dt.datetime.now(dt.UTC)
     grace = settings.offline_grace_seconds
-    cutoff = now - dt.timedelta(seconds=_LONG_OFFLINE_CUTOFF)
     sent = 0
     with factory() as db:
         devices = db.scalars(select(Device).where(Device.status == DeviceStatus.APPROVED)).all()
@@ -70,16 +69,24 @@ def sweep_offline_alerts(factory: sessionmaker, settings) -> int:
             last = device.last_seen_at
             if last is None:
                 continue
-            last_utc = last if last.tzinfo else last.replace(tzinfo=dt.UTC)
-            if (now - last_utc).total_seconds() <= grace:
+            last_utc = ensure_utc(last)
+            offline_seconds = (now - last_utc).total_seconds()
+            if offline_seconds <= grace:
                 continue
-            # Déjà notifié récemment ou hors fenêtre utile ?
+            # Au-delà de 24 h d'indisponibilité *continue*, on cesse d'alerter
+            # (appareil probablement débranché durablement). La condition porte
+            # sur le début de la panne — pas sur la dernière alerte, sinon une
+            # nouvelle panne survenant >24 h après la précédente ne serait
+            # plus jamais signalée.
+            if offline_seconds > _LONG_OFFLINE_CUTOFF:
+                continue
+            # Déjà notifié récemment pour cette panne ?
             last_alert = _last_alert_time(db, device)
-            if last_alert is not None:
-                if (now - last_alert).total_seconds() < _OFFLINE_DEDUP_WINDOW:
-                    continue
-                if last_alert < cutoff:
-                    continue
+            if (
+                last_alert is not None
+                and (now - ensure_utc(last_alert)).total_seconds() < _OFFLINE_DEDUP_WINDOW
+            ):
+                continue
             _mark_alert(db, device, now)
             _smtp_send(
                 settings,

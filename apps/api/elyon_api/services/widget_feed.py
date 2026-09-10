@@ -6,9 +6,10 @@ flux RSS à chaque battement de cœur des players.
 
 from __future__ import annotations
 
+import ipaddress
+import socket
 import time
 import urllib.parse
-import urllib.request
 import xml.etree.ElementTree as ET
 from typing import Any
 
@@ -18,6 +19,8 @@ from fastapi import HTTPException
 CACHE_TTL_SECONDS = 600
 GEO_TTL_SECONDS = 3600
 WEATHER_TTL_SECONDS = 300  # prévision rafraîchie en quasi temps réel
+_RSS_MAX_BYTES = 2_000_000
+_RSS_REDIRECT_LIMIT = 5
 _cache: dict[str, tuple[float, Any]] = {}
 
 
@@ -103,20 +106,66 @@ def fetch_weather(
     return data
 
 
+def _assert_public_feed_url(url: str) -> None:
+    """Garde SSRF : n'autorise que http(s) vers un hôte public.
+
+    Bloque le loopback, les réseaux privés, le link-local (dont l'endpoint
+    metadata cloud 169.254.169.254), le multicast et les adresses réservées.
+    """
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise HTTPException(status_code=400, detail="URL de flux invalide (http/https requis)")
+    try:
+        infos = socket.getaddrinfo(parsed.hostname, None)
+    except socket.gaierror as exc:
+        raise HTTPException(status_code=400, detail="Hôte de flux introuvable") from exc
+    if not infos:
+        raise HTTPException(status_code=400, detail="Hôte de flux introuvable")
+    for info in infos:
+        try:
+            address = ipaddress.ip_address(info[4][0])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Hôte de flux invalide") from exc
+        if not address.is_global:
+            raise HTTPException(
+                status_code=400,
+                detail="Hôte de flux non autorisé (adresse privée ou locale)",
+            )
+
+
+def _http_get_feed(url: str) -> bytes:
+    """Télécharge un flux en revalidant chaque redirection (anti-SSRF)."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) Elyon/1.0",
+        "Accept": "application/rss+xml, application/xml, text/xml, */*",
+    }
+    current = url
+    with httpx.Client(timeout=8, follow_redirects=False, headers=headers) as client:
+        for _ in range(_RSS_REDIRECT_LIMIT + 1):
+            _assert_public_feed_url(current)
+            try:
+                response = client.get(current)
+            except httpx.HTTPError as exc:
+                raise HTTPException(status_code=502, detail=f"Flux injoignable : {exc}") from exc
+            if response.is_redirect:
+                location = response.headers.get("location")
+                if not location:
+                    raise HTTPException(
+                        status_code=502, detail="Flux injoignable : redirection invalide"
+                    )
+                current = urllib.parse.urljoin(current, location)
+                continue
+            if response.status_code >= 400:
+                raise HTTPException(
+                    status_code=502, detail=f"Flux injoignable : HTTP {response.status_code}"
+                )
+            return response.content[:_RSS_MAX_BYTES]
+    raise HTTPException(status_code=502, detail="Flux injoignable : trop de redirections")
+
+
 def fetch_rss(url: str) -> dict[str, Any]:
     """Derniers titres d'un flux RSS/Atom (parsing XML stdlib)."""
-    try:
-        req = urllib.request.Request(
-            url,
-            headers={
-                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) Elyon/1.0",
-                "Accept": "application/rss+xml, application/xml, text/xml, */*",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=8) as resp:  # noqa: S310
-            raw = resp.read(2_000_000)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Flux injoignable : {exc}") from exc
+    raw = _http_get_feed(url)
     titles: list[str] = []
     try:
         root = ET.fromstring(raw)
