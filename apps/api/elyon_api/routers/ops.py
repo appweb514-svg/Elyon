@@ -1372,6 +1372,9 @@ def admin_wall(
                 "current_media_id": device.current_media_id,
                 "current_media_name": media.name if media else None,
                 "current_media_kind": media.kind.value if media else None,
+                "current_media_url": (
+                    media.storage_path if media and media.kind == MediaKind.WEB else None
+                ),
                 "last_seen_at": device.last_seen_at.isoformat() if device.last_seen_at else None,
                 "screen_id": device.screen.id if device.screen else None,
                 **dict(

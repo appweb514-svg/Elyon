@@ -514,14 +514,8 @@ export default function MediaPage() {
                 <button
                   type="button"
                   className="flex h-28 w-full cursor-pointer items-center justify-center overflow-hidden rounded-t-[calc(0.75rem-1px)] bg-muted transition-opacity hover:opacity-90"
-                  title={media.kind === "web" ? "Ouvrir le lien" : "Prévisualiser"}
-                  onClick={() => {
-                    if (media.kind === "web" && media.url) {
-                      window.open(media.url, "_blank", "noopener,noreferrer");
-                      return;
-                    }
-                    openPreview(media);
-                  }}
+                  title={media.kind === "web" ? "Prévisualiser la page" : "Prévisualiser"}
+                  onClick={() => openPreview(media)}
                 >
                   {media.kind === "web" ? (
                     <span className="flex flex-col items-center gap-1 px-2 text-center">
@@ -819,7 +813,21 @@ export default function MediaPage() {
             <DialogDescription>{previewMedia?.name}</DialogDescription>
           </DialogHeader>
           <div className="flex min-h-[280px] items-center justify-center rounded-md bg-muted/50 p-2">
-            {previewMedia?.kind === "video" ? (
+            {previewMedia?.kind === "web" ? (
+              <div className="flex w-full flex-col items-center gap-2">
+                <iframe
+                  key={previewMedia.id}
+                  src={previewMedia.url ?? "about:blank"}
+                  title={previewMedia.name}
+                  className="h-[60vh] w-full rounded-md border bg-white"
+                  sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Page affichée telle quelle par le player. Si elle reste vide,
+                  le site interdit l&apos;intégration : ouvrez-la dans un onglet.
+                </p>
+              </div>
+            ) : previewMedia?.kind === "video" ? (
               <video
                 key={previewMedia.id}
                 controls
@@ -885,13 +893,25 @@ export default function MediaPage() {
             <Button variant="outline" onClick={() => setPreviewMedia(null)}>
               Fermer
             </Button>
-            <Button
-              onClick={() =>
-                previewMedia && window.open(`/api/media/${previewMedia.id}/download`, "_blank")
-              }
-            >
-              <Download /> Télécharger
-            </Button>
+            {previewMedia?.kind === "web" ? (
+              <Button
+                onClick={() =>
+                  previewMedia?.url &&
+                  window.open(previewMedia.url, "_blank", "noopener,noreferrer")
+                }
+                disabled={!previewMedia?.url}
+              >
+                <Globe /> Ouvrir dans un onglet
+              </Button>
+            ) : (
+              <Button
+                onClick={() =>
+                  previewMedia && window.open(`/api/media/${previewMedia.id}/download`, "_blank")
+                }
+              >
+                <Download /> Télécharger
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

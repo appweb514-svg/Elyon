@@ -512,3 +512,43 @@ def test_viewer_cannot_add_web_media(client: TestClient):
         client, "POST", "/api/media/url", json={"url": "https://exemple.fr/page"}
     )
     assert response.status_code == 403
+
+
+def test_wall_exposes_current_web_url(client: TestClient):
+    _org_setup(client)
+    device = _approved_device(client, "SER-WEB-1")
+    headers = {"Authorization": f"Bearer {device['token']}"}
+    created = auth_json(
+        client,
+        "POST",
+        "/api/media/url",
+        json={"url": "https://elyon.int.labvirtuel.fr/media", "name": "Portail"},
+    )
+    media_id = created.json()["id"]
+
+    show = auth_json(
+        client,
+        "POST",
+        f"/api/media/{media_id}/show",
+        json={"device_id": device["device_id"]},
+    )
+    assert show.status_code == 201, show.text
+    commands = client.get(
+        f"/api/devices/{device['device_id']}/commands", headers=headers
+    ).json()
+    assert any(
+        command["type"] == "show"
+        and "https://elyon.int.labvirtuel.fr/media" in (command["payload"] or "")
+        for command in commands
+    )
+
+    # Le heartbeat du player reflète la page affichée sur le mur.
+    client.post(
+        f"/api/devices/{device['device_id']}/heartbeat",
+        headers=headers,
+        json={"state": "playing", "current_media_id": media_id},
+    )
+    wall = client.get("/api/admin/wall").json()
+    frame = next(item for item in wall if item["device_id"] == device["device_id"])
+    assert frame["current_media_kind"] == "web"
+    assert frame["current_media_url"] == "https://elyon.int.labvirtuel.fr/media"

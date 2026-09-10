@@ -132,6 +132,8 @@ export default function PlayerPage() {
   const runKiosk = useCallback(
     async (s: Stored) => {
       let alive = true;
+      // Commande « Afficher » en cours (ref pour éviter le narrowing TS).
+      const showRef = { current: null as QueueItem | null };
       const fetchManifest = async (): Promise<Manifest | null> => {
         try {
           const res = await fetch(`/api/devices/${s.device_id}/manifest`, {
@@ -158,10 +160,69 @@ export default function PlayerPage() {
       void fetchFeed();
       const feedTimer = setInterval(fetchFeed, 5 * 60 * 1000);
 
-      // Boucle : manifeste → lecture → heartbeat. Simple et robuste.
+      // Commandes serveur (Afficher / Arrêter) : le player web ne lisait que
+      // le manifeste, « Afficher » n'avait donc aucun effet.
+      const checkCommands = async () => {
+        const commands = await fetchCommands(s);
+        for (const command of commands) {
+          let commandError: string | null = null;
+          try {
+            if (command.type === "show") {
+              const payload = JSON.parse(command.payload ?? "{}") as Record<string, unknown>;
+              const mediaId = String(payload.media_id ?? "");
+              const kind = String(payload.kind ?? "image");
+              const url = payload.url ? String(payload.url) : null;
+              if (!mediaId) {
+                commandError = "Commande SHOW sans media_id";
+              } else if (kind === "web" && !url) {
+                commandError = "Commande SHOW web sans url";
+              } else {
+                showRef.current = {
+                  media_id: mediaId,
+                  kind,
+                  name: String(payload.name ?? mediaId),
+                  duration:
+                    payload.duration_seconds != null
+                      ? Number(payload.duration_seconds)
+                      : null,
+                  url,
+                };
+              }
+            } else if (command.type === "stop_show") {
+              showRef.current = null;
+            } else if (command.type === "resync") {
+              // Rien à faire : la boucle relit le manifeste juste après.
+            } else if (command.type === "reboot") {
+              await ackCommand(s, command.id, null);
+              window.location.reload();
+              return;
+            } else {
+              commandError = `Commande non supportée par le player web : ${command.type}`;
+            }
+          } catch {
+            commandError = "Commande illisible";
+          }
+          await ackCommand(s, command.id, commandError);
+        }
+      };
+
+      // Boucle : commandes → manifeste → lecture → heartbeat.
       const loop = async () => {
         for (;;) {
           if (!alive) return;
+          await checkCommands();
+          if (showRef.current) {
+            const item = showRef.current;
+            setStatus(`lecture ${item.name}`);
+            await heartbeat(s, "playing", item.media_id);
+            if (item.duration != null) showRef.current = null;
+            if (item.kind === "web") {
+              await playWeb(item.url ?? "", item.duration ?? 60, () => alive);
+            } else {
+              await playItem(s, item, () => alive);
+            }
+            continue;
+          }
           const m = await fetchManifest();
           const items: QueueItem[] = [];
           if (m && m.blocks?.length) {
@@ -192,6 +253,8 @@ export default function PlayerPage() {
           }
           // Lecture séquentielle (boucle infinie du bloc actif).
           for (let i = 0; i < items.length && alive; i++) {
+            await checkCommands();
+            if (showRef.current) break; // la boucle externe affiche le média
             const item = items[i];
             setStatus(`lecture ${item.name}`);
             await heartbeat(s, "playing", item.media_id);
@@ -306,6 +369,49 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+type DeviceCommand = { id: string; type: string; payload?: string | null };
+
+async function fetchCommands(s: Stored): Promise<DeviceCommand[]> {
+  try {
+    const res = await fetch(`/api/devices/${s.device_id}/commands`, {
+      headers: { Authorization: `Bearer ${s.token}` },
+    });
+    if (!res.ok) return [];
+    return (await res.json()) as DeviceCommand[];
+  } catch {
+    return [];
+  }
+}
+
+async function ackCommand(s: Stored, commandId: string, error: string | null): Promise<void> {
+  try {
+    await fetch(`/api/devices/${s.device_id}/commands/${commandId}/ack`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${s.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ error }),
+    });
+  } catch {
+    /* l'ack sera retenté au prochain passage */
+  }
+}
+
+/** Affiche une page web dans le kiosque pendant `seconds`. */
+async function playWeb(target: string, seconds: number, alive: () => boolean): Promise<void> {
+  if (!target || !alive()) return;
+  await new Promise<void>((resolve) => {
+    const iframe = document.createElement("iframe");
+    iframe.src = target;
+    iframe.title = target;
+    iframe.className = "absolute inset-0 h-full w-full border-0 bg-white";
+    const root = document.getElementById("kiosk-root");
+    if (root) {
+      root.innerHTML = "";
+      root.appendChild(iframe);
+    }
+    setTimeout(resolve, Math.max(1, seconds) * 1000);
+  });
+}
+
 function tickerText(w: Record<string, unknown> | undefined): string {
   if (!w) return "";
   const p = (w.params ?? {}) as Record<string, unknown>;
@@ -321,20 +427,7 @@ function tickerSpeed(w: Record<string, unknown> | undefined): string {
 /** Lecture d'un item : vidéo native, image ou page web (iframe). */
 async function playItem(s: Stored, item: QueueItem, alive: () => boolean): Promise<void> {
   if (item.kind === "web") {
-    const target = item.url ?? "";
-    if (!target) return;
-    await new Promise<void>((resolve) => {
-      const iframe = document.createElement("iframe");
-      iframe.src = target;
-      iframe.title = item.name;
-      iframe.className = "absolute inset-0 h-full w-full border-0 bg-white";
-      const root = document.getElementById("kiosk-root");
-      if (root) {
-        root.innerHTML = "";
-        root.appendChild(iframe);
-      }
-      setTimeout(resolve, (item.duration ?? 30) * 1000);
-    });
+    await playWeb(item.url ?? "", item.duration ?? 30, alive);
     return;
   }
   const url = deviceFileUrl(s.device_id, item.media_id, s.token);

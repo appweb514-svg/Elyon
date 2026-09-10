@@ -74,6 +74,7 @@ type WallFrame = {
   current_media_id: string | null;
   current_media_name: string | null;
   current_media_kind: string | null;
+  current_media_url?: string | null;
   ticker_text?: string | null;
   ticker_speed?: string | null;
 };
@@ -812,6 +813,14 @@ export default function DeviceDetailPage() {
                       </div>
                     ) : null}
                   </div>
+                ) : wall?.current_media_kind === "web" && wall?.current_media_url ? (
+                  <iframe
+                    key={currentMediaKey}
+                    src={wall.current_media_url}
+                    title={wall.current_media_name ?? "page web"}
+                    className="h-full w-full border-0 bg-white"
+                    sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation"
+                  />
                 ) : (
                   /* eslint-disable-next-line @next/next/no-img-element */
                   <img

@@ -18,6 +18,7 @@ export type WallFrame = {
   current_media_id: string | null;
   current_media_name: string | null;
   current_media_kind: string | null;
+  current_media_url?: string | null;
   last_seen_at: string | null;
   screen_id: string | null;
   ticker_text?: string | null;
@@ -94,12 +95,22 @@ function VncWindow({ frame, delay }: { frame: WallFrame; delay?: number }) {
               ) : null}
             </div>
           ) : online ? (
-            /* eslint-disable-next-line @next/next/no-img-element */
-            <img
-              src={`/api/admin/wall/${frame.device_id}/live`}
-              alt={frame.current_media_name ?? "écran"}
-              className="h-full w-full object-contain"
-            />
+            frame.current_media_kind === "web" && frame.current_media_url ? (
+              <iframe
+                key={frame.current_media_id ?? frame.device_id}
+                src={frame.current_media_url}
+                title={frame.current_media_name ?? "page web"}
+                className="h-full w-full border-0 bg-white"
+                sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation"
+              />
+            ) : (
+              /* eslint-disable-next-line @next/next/no-img-element */
+              <img
+                src={`/api/admin/wall/${frame.device_id}/live`}
+                alt={frame.current_media_name ?? "écran"}
+                className="h-full w-full object-contain"
+              />
+            )
           ) : (
             <div className="flex h-full flex-col items-center justify-center gap-2 text-slate-500">
               <span className="text-3xl">{blanked ? "⬛" : "💤"}</span>
