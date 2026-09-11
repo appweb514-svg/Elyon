@@ -716,3 +716,38 @@ def test_pause_and_page_index(client: TestClient):
     wall = client.get("/api/admin/wall").json()
     frame = next(item for item in wall if item["device_id"] == device["device_id"])
     assert frame["is_paused"] is False
+
+
+def test_video_preview_freezes_while_paused(client: TestClient):
+    """Pause : l'aperçu vidéo est figé sur la frame atteinte.
+
+    Le seek du rendu serveur (marqueur player ou fallback _video_start) est
+    mémorisé à la mise en pause et ne suit plus l'horloge ; la reprise
+    (resume, nouveau heartbeat playing, nouveau média) le dégelé.
+    """
+    from elyon_api.routers.ops import _frozen_video_seek, _thaw_video_seek
+
+    _org_setup(client)
+    device = _approved_device(client, "SER-PAUSE-2")
+    media = _upload_png(client, "freeze.png")["id"]
+    device_id = device["device_id"]
+
+    # Gel : deux appels successifs avec un seek « live » croissant → même
+    # position retournée (mémorisée au premier appel).
+    first = _frozen_video_seek(device_id, media, "/tmp/v.mp4", 5.0)
+    second = _frozen_video_seek(device_id, media, "/tmp/v.mp4", 9.0)
+    assert first == second == 5.0
+    # Changement de média (clé différente) : nouveau point de gel.
+    other = _frozen_video_seek(device_id, "other", "/tmp/v.mp4", 2.0)
+    assert other == 2.0
+
+    _thaw_video_seek(device_id)
+    after_thaw = _frozen_video_seek(device_id, media, "/tmp/v.mp4", 7.0)
+    assert after_thaw == 7.0  # le gel a été oublié : nouvelle référence
+
+    # Le pause/resume via l'API dégèle bien (le module est partagé).
+    auth_json(client, "POST", f"/api/devices/{device_id}/commands", json={"type": "pause"})
+    auth_json(client, "POST", f"/api/devices/{device_id}/commands", json={"type": "resume"})
+    assert _frozen_video_seek(device_id, media, "/tmp/v.mp4", 1.0) == 1.0
+    # La reprise via heartbeat playing dégelée : le cache est purgé à resume.
+    _thaw_video_seek(device_id)

@@ -112,6 +112,12 @@ def heartbeat(
     device.current_page_index = (
         body.page_index if body.state == "playing" and body.page_index is not None else None
     )
+    # Reprise de lecture : le seek vidéo suit à nouveau l'horloge (le gel de
+    # la pause est oublié). Nouveau média : idem.
+    if body.state == "playing" and previous_media_id != body.current_media_id:
+        _thaw_video_seek(device_id)
+    elif body.state == "playing" and device.is_paused is False:
+        _thaw_video_seek(device_id)
     # Télémétrie
     device.uptime_seconds = body.uptime_seconds
     device.load_avg = body.load_avg
@@ -626,6 +632,7 @@ def issue_command(
         device.is_paused = True
     elif body.type == CommandType.RESUME:
         device.is_paused = False
+        _thaw_video_seek(device_id)
     cmd = Command(
         device_id=device_id,
         type=body.type,
@@ -1067,8 +1074,10 @@ def _live_video_state(
         # périmé (le player ne réécrit pas son marqueur lors d'un blank).
         if device.player_state == "blank":
             return None
-        if device.player_state == "paused":
-            return None  # rendu image figé, pas de flux vidéo
+        if device.player_state == "paused" or device.is_paused:
+            # Vidéo figée : le flux MJPEG retombe sur le rendu image (frame
+            # extraite à la position gelée de la pause, pas de flux vivant).
+            return None
         marker = _find_player_marker(device)
         if marker is not None:
             _, marker_file = marker
@@ -1120,6 +1129,14 @@ def _live_video_state(
             seek = 0.0
         else:
             seek = now - tracked[1]
+        # Pause : l'aperçu reste figé sur la frame atteinte (l'horloge du
+        # serveur ne doit plus faire avancer la vidéo).
+        if device.is_paused:
+            return (
+                str(abs_path),
+                _frozen_video_seek(device.id, media.id, str(abs_path), seek),
+                _device_widgets(device),
+            )
         return str(abs_path), seek, _device_widgets(device)
 
 
@@ -1243,6 +1260,9 @@ def _render_live_frame(db_factory, settings, device_id: str) -> bytes | None:
                     seek = 0.0
                 else:
                     seek = now - tracked[1]
+                # Pause : position gelée à la frame atteinte.
+                if device.is_paused:
+                    seek = _frozen_video_seek(device.id, media.id, str(abs_path), seek)
                 frame = _video_frame(abs_path, seek_seconds=seek)
                 if frame:
                     return frame
@@ -1291,12 +1311,18 @@ def _player_frame(device: Device, media: Media) -> bytes | None:
         if info.get("video"):
             # Vidéo : le player indique le fichier source ET l'heure de début
             # de lecture → frame extraite à la position courante (aperçu vivant).
+            # En pause : la position est GELÉE à la valeur atteinte au moment
+            # de la mise en pause (l'horloge murale ne doit plus avancer).
             video_path = info.get("path")
             if video_path and Path(str(video_path)).exists():
                 try:
                     seek = max(0.0, _time.time() - float(info.get("started_at")))
                 except (TypeError, ValueError):
                     seek = 3.0
+                if device.is_paused or device.player_state == "paused":
+                    seek = _frozen_video_seek(
+                        device.id, info.get("path"), video_path, seek
+                    )
                 frame = _video_frame(Path(str(video_path)), seek_seconds=seek)
         elif frame_file.exists():
             try:
@@ -1322,7 +1348,26 @@ _player_frame_cache: dict[str, tuple[bytes | None, float]] = {}
 # le rendu vidéo côté serveur (fallback sans capture du player).
 _video_start: dict[str, tuple[str, float]] = {}
 
-# Curseur + gel d'auto-enchaînement (module partagé, voir playback_state).
+# device_id → (chemin vidéo, seek) : position GELÉE pendant la pause —
+# l'aperçu du mur/page appareil reste figé sur la frame où la pause est
+# arrivée (sinon le seek calculé sur l'horloge réelle continuerait d'avancer).
+_video_freeze: dict[str, tuple[str, float]] = {}
+
+
+def _frozen_video_seek(device_id: str, key: object, video_path: str, live_seek: float) -> float:
+    """Position vidéo gelée pendant la pause (mémorisée à la mise en pause)."""
+    frozen = _video_freeze.get(device_id)
+    k = str(key)
+    if frozen is not None and frozen[0] == k:
+        return frozen[1]
+    _video_freeze[device_id] = (k, live_seek)
+    return live_seek
+
+
+def _thaw_video_seek(device_id: str) -> None:
+    """Reprise : la lecture suit à nouveau l'horloge (le gel est oublié)."""
+    _video_freeze.pop(device_id, None)
+    _video_start.pop(device_id, None)
 
 
 def _queue_advance_if_needed(db: Session, device: Device, settings) -> None:
