@@ -109,6 +109,54 @@ def test_show_handler_downloads_and_queues(
     assert blob.read_bytes() == content
 
 
+def test_show_handler_downloads_all_pdf_pages(
+    api, agent, api_settings, db_session_factory, enrolled, tmp_path, agent_settings
+):
+    """SHOW d'un PDF multi-pages : TOUTES les pages sont téléchargées.
+
+    La spec `kind=pages` liste les blobs de chaque page — le moteur les
+    déroulera page par page au lieu d'afficher seulement la première.
+    """
+    agent_settings.data_dir = tmp_path
+    state = DeviceState(device_id="dev-multipage", token="tok")
+    handler = make_show_handler(agent, state, tmp_path)
+
+    # Fake client : capture les téléchargements et écrit un blob par page.
+    downloads: list[tuple[str, int]] = []
+
+    def fake_download(
+        media_id: str, dest, auth_token: str, page_index: int | None = None
+    ):  # noqa: ANN001
+        downloads.append((media_id, page_index if page_index is not None else -1))
+        dest.write_bytes(f"page-{page_index}".encode())
+
+    # Le handler appelle agent.download_device_media : remplaçons la méthode.
+    agent.download_device_media = fake_download  # type: ignore[method-assign]
+
+    payload = json.dumps(
+        {"media_id": "doc123", "kind": "pdf", "pages": 3, "name": "Rapport"}
+    )
+    handler(Command(id="show-pdf", type="show", payload=payload))
+
+    assert downloads == [("doc123", 0), ("doc123", 1), ("doc123", 2)]
+    spec = json.loads((tmp_path / "show" / "request.json").read_text(encoding="utf-8"))
+    assert spec["kind"] == "pages"
+    assert spec["media_id"] == "doc123"
+    assert len(spec["page_blobs"]) == 3
+    for index in range(3):
+        blob = tmp_path / "show" / f"doc123.p{index}"
+        assert blob.exists() and blob.stat().st_size > 0
+    # La pause est levée par un nouveau SHOW.
+    assert not (tmp_path / "pause").exists()
+
+    # Un PDF d'une SEULE page reste un affichage image simple (page 0).
+    payload_single = json.dumps({"media_id": "doc1", "kind": "pdf", "pages": 1})
+    handler(Command(id="show-pdf1", type="show", payload=payload_single))
+    spec1 = json.loads((tmp_path / "show" / "request.json").read_text(encoding="utf-8"))
+    assert spec1["kind"] == "image"
+    assert downloads[-1] == ("doc1", 0)
+
+
 def test_run_forever_passes_synchronizer(monkeypatch, agent, agent_settings, enrolled):
     _, _, device_id, token = enrolled
     DeviceState(device_id=device_id, token=token).save(agent_settings.state_file)

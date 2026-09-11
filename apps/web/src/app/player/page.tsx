@@ -44,6 +44,7 @@ type QueueItem = {
   duration: number | null;
   url?: string | null;
   page_index?: number | null;
+  page_count?: number | null;
 };
 type WeatherInfo = {
   city?: string | null;
@@ -211,6 +212,8 @@ export default function PlayerPage() {
                       ? Number(payload.duration_seconds)
                       : null,
                   url,
+                  page_count:
+                    payload.pages != null ? Number(payload.pages) : null,
                 };
               }
             } else if (command.type === "stop_show") {
@@ -266,6 +269,8 @@ export default function PlayerPage() {
             } else {
               await playItem(s, item, () => alive, () => pausedRef.current, (video) => {
                 videoRef.current = video;
+              }, (mediaId, pageIndex) => {
+                void heartbeat(s, "playing", mediaId, pageIndex);
               });
             }
             continue;
@@ -324,6 +329,8 @@ export default function PlayerPage() {
             await heartbeat(s, "playing", item.media_id, item.page_index ?? null);
             await playItem(s, item, () => alive, () => pausedRef.current, (video) => {
               videoRef.current = video;
+            }, (mediaId, pageIndex) => {
+              void heartbeat(s, "playing", mediaId, pageIndex);
             });
           }
         }
@@ -588,15 +595,18 @@ async function playItem(
   item: QueueItem,
   alive: () => boolean,
   paused: () => boolean,
-  onVideo?: (video: HTMLVideoElement | null) => void
+  onVideo?: (video: HTMLVideoElement | null) => void,
+  onPage?: (mediaId: string, pageIndex: number) => void
 ): Promise<void> {
   if (item.kind === "web") {
     await playWeb(item.url ?? "", item.duration ?? 30, alive, paused);
     return;
   }
-  if (item.kind === "page" || item.kind === "pdf" || item.kind === "office") {
-    // Page d'un PDF/Office : une page toutes les 5 s (surchargeable).
+  if (item.kind === "page") {
+    // Page d'un document : une page pendant sa durée (5 s par défaut).
     const pageIndex = item.page_index ?? 0;
+    // Le suivi de la page affichée (aperçu du mur) remonte par heartbeat.
+    onPage?.(item.media_id, pageIndex);
     const pageUrl = `/api/media/${item.media_id}/pages/${pageIndex}/device-file?token=${encodeURIComponent(s.token)}`;
     await new Promise<void>((resolve) => {
       const img = new Image();
@@ -612,6 +622,28 @@ async function playItem(
       img.onerror = () => setTimeout(resolve, 2_000);
       img.src = pageUrl;
     });
+    return;
+  }
+  if (item.kind === "pdf" || item.kind === "office" || item.kind === "pages") {
+    // Document multi-pages (SHOW) : toutes les pages défilent, 5 s par
+    // défaut, avant de passer au média suivant.
+    const count = Math.max(1, item.page_count ?? 1);
+    for (let page = 0; page < count && alive(); page++) {
+      await playItem(
+        s,
+        {
+          media_id: item.media_id,
+          kind: "page",
+          name: `${item.name} p.${page + 1}`,
+          duration: item.duration ?? 5,
+          page_index: page,
+        },
+        alive,
+        paused,
+        onVideo,
+        onPage
+      );
+    }
     return;
   }
   const url = deviceFileUrl(s.device_id, item.media_id, s.token);

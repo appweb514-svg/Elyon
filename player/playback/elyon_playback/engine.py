@@ -40,13 +40,14 @@ def write_now_playing(path: Path, payload: dict[str, Any]) -> None:
 class PlayItem:
     """Élément élémentaire de la file de lecture (image, page, vidéo, URL)."""
 
-    kind: str  # "image" | "page" | "video" | "url"
+    kind: str  # "image" | "page" | "video" | "url" | "pages"
     path: Path
     duration_seconds: float | None = None  # None = jusqu'à la fin (vidéo)
     media_id: str = ""
     name: str = ""
     url: str = ""  # page web (kind="url")
     page_index: int = 0  # page affichée (kind="page")
+    page_paths: tuple[Path, ...] = ()  # document multi-pages (kind="pages")
 
 
 def build_queue(layout: dict[str, Any], blob_dir: Path) -> list[PlayItem]:
@@ -248,6 +249,23 @@ class PlaybackEngine:
                 # Renderer sans navigateur (mpv) : on passe sans tuer la boucle.
                 self.sleep_fn(min(duration, 1.0))
             return
+        if item.kind == "pages" and len(item.page_paths) > 1:
+            # Document multi-pages : chaque page est affichée page_duration
+            # secondes (5 s par défaut), avec suivi de la page courante.
+            page_duration = item.duration_seconds or 5.0
+            for index, page_path in enumerate(item.page_paths):
+                if self._should_stop():
+                    return
+                page_item = PlayItem(
+                    kind="page",
+                    path=page_path,
+                    duration_seconds=page_duration,
+                    media_id=item.media_id,
+                    name=f"{item.name} p.{index + 1}",
+                    page_index=index,
+                )
+                self.play_item(page_item)
+            return
         # Widget « vivant » (horloge, météo, ticker RSS) : l'image est
         # recomposée à intervalles réguliers pour un affichage en temps réel.
         if item.kind in ("image", "page") and has_live_widgets(self.active_widgets):
@@ -374,6 +392,20 @@ class PlaybackEngine:
                 name=str(show.get("name") or media_id),
                 url=url,
             )
+        if kind == "pages":
+            # Document multi-pages (PDF/Office) : un seul PlayItem qui se
+            # déroule page par page (5 s par défaut) dans play_item.
+            page_paths = tuple(Path(str(p)) for p in (show.get("page_blobs") or []))
+            if not page_paths or not all(p.exists() for p in page_paths):
+                return None  # téléchargement en cours : nouvelle tentative
+            return PlayItem(
+                kind="pages",
+                path=page_paths[0],
+                duration_seconds=duration_f,
+                media_id=media_id,
+                name=str(show.get("name") or media_id),
+                page_paths=page_paths,
+            )
         path = self._data_dir() / "show" / media_id
         if not path.exists():
             return None
@@ -404,6 +436,29 @@ class PlaybackEngine:
             duration_f = float(duration) if duration else None
         except (TypeError, ValueError):
             duration_f = None
+        if kind == "pages":
+            # Document multi-pages : déroule toutes les pages puis consomme
+            # la spec (le document est entièrement parcouru).
+            page_paths = tuple(
+                Path(str(p)) for p in (request.get("page_blobs") or [])
+            )
+            if not page_paths or not all(p.exists() for p in page_paths):
+                self.sleep_fn(0.5)  # téléchargement en cours
+                return
+            item = PlayItem(
+                kind="pages",
+                path=page_paths[0],
+                duration_seconds=duration_f,
+                media_id=media_id,
+                name=str(request.get("name") or media_id),
+                page_paths=page_paths,
+            )
+            self.current_media_id = media_id
+            self.play_item(item)
+            self.show_clear(self._data_dir())
+            self.current_media_id = None
+            self._publish_status({"media_id": None, "state": "idle"})
+            return
         if kind == "web":
             url = str(request.get("url") or "")
             if not url:

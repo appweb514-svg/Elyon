@@ -149,6 +149,150 @@ def test_show_request_played_then_cleared(tmp_path):
     assert engine.current_media_id is None
 
 
+def test_show_multipage_document_plays_all_pages(tmp_path):
+    """SHOW d'un PDF multi-pages : toutes les pages défilent (5 s par défaut).
+
+    La spec `kind=pages` (page_blobs) est déroulée page par page avec le
+    numéro de page publié, puis la spec est consommée.
+    """
+    import json
+
+    from elyon_playback.engine import PlaybackEngine
+
+    renderer = FakeRenderer()
+    show_dir = tmp_path / "show"
+    show_dir.mkdir(parents=True, exist_ok=True)
+    p1 = show_dir / "doc.p0"
+    p2 = show_dir / "doc.p1"
+    p1.write_bytes(b"page1")
+    p2.write_bytes(b"page2")
+    (show_dir / "request.json").write_text(
+        json.dumps(
+            {
+                "media_id": "doc",
+                "name": "Rapport",
+                "kind": "pages",
+                "page_blobs": [str(p1), str(p2)],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    stops = iter([False, False, False, True])  # show → page1 → page2 → stop
+    engine = PlaybackEngine(
+        renderer=renderer,
+        layout_provider=lambda: None,
+        heartbeat_file=tmp_path / "hb",
+        blob_dir=tmp_path / "blobs",
+        stop_check=lambda: next(stops),
+        sleep_fn=lambda s: None,
+    )
+    engine.run_forever()
+    assert renderer.events == [
+        ("image", (p1, 5.0)),
+        ("image", (p2, 5.0)),
+    ]
+    assert not (show_dir / "request.json").exists()
+
+
+def test_show_multipage_respects_duration(tmp_path):
+    """La durée par page du SHOW (duration_seconds) prime sur 5 s."""
+    import json
+
+    from elyon_playback.engine import PlaybackEngine
+
+    renderer = FakeRenderer()
+    show_dir = tmp_path / "show"
+    show_dir.mkdir(parents=True, exist_ok=True)
+    p1 = show_dir / "doc.p0"
+    p2 = show_dir / "doc.p1"
+    p1.write_bytes(b"page1")
+    p2.write_bytes(b"page2")
+    (show_dir / "request.json").write_text(
+        json.dumps(
+            {
+                "media_id": "doc",
+                "kind": "pages",
+                "page_blobs": [str(p1), str(p2)],
+                "duration_seconds": 12,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    stops = iter([False, False, False, True])
+    engine = PlaybackEngine(
+        renderer=renderer,
+        layout_provider=lambda: None,
+        heartbeat_file=tmp_path / "hb",
+        blob_dir=tmp_path / "blobs",
+        stop_check=lambda: next(stops),
+        sleep_fn=lambda s: None,
+    )
+    engine.run_forever()
+    assert renderer.events == [
+        ("image", (p1, 12.0)),
+        ("image", (p2, 12.0)),
+    ]
+
+
+def test_pending_show_multipage_in_playlist_queue(tmp_path):
+    """Avec playliste en cours, le document multi-pages s'insère en tête.
+
+    Les pages se déroulent avant la suite de la playliste.
+    """
+    import json
+
+    from elyon_playback.engine import PlaybackEngine
+
+    renderer = FakeRenderer()
+    show_dir = tmp_path / "show"
+    show_dir.mkdir(parents=True, exist_ok=True)
+    p1 = show_dir / "doc.p0"
+    p2 = show_dir / "doc.p1"
+    p1.write_bytes(b"page1")
+    p2.write_bytes(b"page2")
+    (show_dir / "request.json").write_text(
+        json.dumps(
+            {
+                "media_id": "doc",
+                "kind": "pages",
+                "page_blobs": [str(p1), str(p2)],
+            }
+        ),
+        encoding="utf-8",
+    )
+    blob_dir = tmp_path / "blobs"
+    blob_dir.mkdir(exist_ok=True)
+    (blob_dir / "aaa").write_bytes(b"img")
+    layout = {
+        "blocks": [
+            {
+                "schedule_id": "s1",
+                "priority": 1,
+                "entries": [{"media_id": "m-img", "duration_seconds": 6}],
+            }
+        ],
+        "media": [
+            {"media_id": "m-img", "name": "Logo", "kind": "image",
+             "main_blob": "aaa", "page_blobs": []},
+        ],
+    }
+
+    # Le show est inséré en tête : pages du document puis image playliste.
+    engine = PlaybackEngine(
+        renderer=renderer,
+        layout_provider=lambda: layout,
+        heartbeat_file=tmp_path / "hb",
+        blob_dir=blob_dir,
+        stop_check=lambda: False,
+        sleep_fn=lambda s: None,
+    )
+    pending = engine._pending_show_item()
+    assert pending is not None and pending.kind == "pages"
+    assert pending.page_paths == (p1, p2)
+
+
 def test_show_inserted_into_playlist_queue_and_writes_frame(tmp_path):
     """Un « Afficher » reçu en pleine lecture est inséré dans la playliste en
     cours : il passe avant la suite, qui reprend ENSUITE là où elle en était

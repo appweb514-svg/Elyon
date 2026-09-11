@@ -568,6 +568,45 @@ def test_web_media_show_payload_and_manifest_entry():
     assert entry["size_bytes"] == 0
 
 
+def test_show_payload_includes_page_count_for_multipage():
+    """Le SHOW d'un PDF/Office porte `pages` : les players déroulent les pages."""
+    import json as json_mod
+    from types import SimpleNamespace
+
+    from elyon_api.models import MediaKind
+    from elyon_api.services.manifest import show_payload
+
+    multipage = SimpleNamespace(
+        id="mpdf",
+        name="Rapport",
+        kind=MediaKind.PDF,
+        storage_path="docs/rapport.pdf",
+        pages_json=json_mod.dumps(
+            ["docs/rapport.pdf", "thumbs/mpdf.jpg", "thumbs/mpdf-1.jpg"]
+        ),
+    )
+    payload = show_payload(multipage)
+    assert payload["pages"] == 3
+
+    single = SimpleNamespace(
+        id="mpdf1",
+        name="Simple",
+        kind=MediaKind.PDF,
+        storage_path="docs/one.pdf",
+        pages_json=json_mod.dumps(["docs/one.pdf"]),
+    )
+    assert "pages" not in show_payload(single)  # une seule page : rien à dérouler
+
+    image = SimpleNamespace(
+        id="mimg",
+        name="Logo",
+        kind=MediaKind.IMAGE,
+        storage_path="img.png",
+        pages_json=None,
+    )
+    assert "pages" not in show_payload(image)
+
+
 def test_viewer_cannot_add_web_media(client: TestClient):
     org = _org_setup(client)
     created = auth_json(

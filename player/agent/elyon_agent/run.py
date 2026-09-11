@@ -184,9 +184,35 @@ def make_show_handler(
             )
             return
         dest = show_dir / media_id
-        page_index = None
-        if kind in ("pdf", "office"):
-            page_index = 0
+        if kind in ("pdf", "office") and int(payload.get("pages") or 0) > 1:
+            # Document multi-pages : toutes les pages sont téléchargées puis
+            # déroulées page par page (5 s par défaut) par le moteur.
+            page_count = int(payload["pages"])
+            page_paths: list[str] = []
+            for index in range(page_count):
+                page_dest = show_dir / f"{media_id}.p{index}"
+                client.download_device_media(
+                    media_id,
+                    page_dest,
+                    auth_token=state.token,
+                    page_index=index,
+                )
+                page_paths.append(str(page_dest))
+            spec = {
+                "media_id": media_id,
+                "name": payload.get("name") or media_id,
+                "kind": "pages",
+                "page_blobs": page_paths,
+            }
+            if payload.get("duration_seconds") is not None:
+                spec["duration_seconds"] = payload["duration_seconds"]
+            (data_dir / "pause").unlink(missing_ok=True)
+            (show_dir / "request.json").write_text(
+                json.dumps(spec),
+                encoding="utf-8",
+            )
+            return
+        page_index = 0 if kind in ("pdf", "office") else None
         client.download_device_media(
             media_id, dest, auth_token=state.token, page_index=page_index
         )

@@ -36,7 +36,12 @@ def _file_digest(storage: StorageBackend, path: str) -> tuple[str, int]:
 
 
 def show_payload(media: Media) -> dict[str, str | int]:
-    """Payload d'une commande SHOW (inclut l'URL pour un média web)."""
+    """Payload d'une commande SHOW (inclut l'URL pour un média web).
+
+    Pour un PDF/Office multi-pages : `pages` (nombre de pages) permet aux
+    players de dérouler le document page par page (5 s par défaut) avant de
+    passer au média suivant.
+    """
     payload: dict[str, str | int] = {
         "media_id": media.id,
         "name": media.name,
@@ -44,6 +49,13 @@ def show_payload(media: Media) -> dict[str, str | int]:
     }
     if media.kind == MediaKind.WEB:
         payload["url"] = media.storage_path
+    if media.kind in (MediaKind.PDF, MediaKind.OFFICE) and media.pages_json:
+        try:
+            page_count = len(json.loads(media.pages_json))
+        except (OSError, ValueError, TypeError):
+            page_count = 0
+        if page_count > 1:  # une seule page : rien à dérouler côté player
+            payload["pages"] = page_count
     return payload
 
 
