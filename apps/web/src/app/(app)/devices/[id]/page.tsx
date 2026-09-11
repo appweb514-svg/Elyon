@@ -389,7 +389,11 @@ export default function DeviceDetailPage() {
   async function queuePlay(mediaId?: string) {
     try {
       await api.post(`/api/devices/${deviceId}/queue/play`, mediaId ? { media_id: mediaId } : {});
-      setNotice("Lecture lancée.");
+      setNotice(
+        mediaId
+          ? "Lecture lancée."
+          : "Lecture lancée : tous les médias défilent dans l'ordre."
+      );
       await refreshAll();
     } catch (err) {
       setError(String((err as Error).message ?? err));
@@ -888,9 +892,9 @@ export default function DeviceDetailPage() {
                       variant="outline"
                       onClick={() => void queuePlay()}
                       disabled={queue.length === 0}
-                      title="Lire le premier média de la file"
+                      title="Diffuser tous les médias de la file, les uns après les autres"
                     >
-                      ▶ Lire la file
+                      ▶ Lire tous les médias
                     </Button>
                     <Button
                       size="sm"

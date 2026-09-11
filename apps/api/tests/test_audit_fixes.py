@@ -423,6 +423,81 @@ def test_queue_auto_advance_persists_state_in_db(client: TestClient, db_session_
     )
 
 
+def test_queue_play_all_media_enables_auto_advance(client: TestClient, db_session_factory):
+    """« Lire tous les médias » (queue/play sans media_id) : la file entière
+    défile — lecture du premier média + auto-enchaînement activé."""
+    import datetime as dt
+
+    from elyon_api.models import Device
+
+    _org_setup(client)
+    device = _approved_device(client, "SER-QUEUE-2")
+    headers = {"Authorization": f"Bearer {device['token']}"}
+    media1 = _upload_png(client, "qa.png")["id"]
+    media2 = _upload_png(client, "qb.png")["id"]
+    for media_id in (media1, media2):
+        queued = auth_json(
+            client,
+            "POST",
+            f"/api/devices/{device['device_id']}/queue",
+            json={"media_id": media_id},
+        )
+        assert queued.status_code == 201, queued.text
+
+    played = auth_json(client, "POST", f"/api/devices/{device['device_id']}/queue/play")
+    assert played.status_code == 201, played.text
+    assert played.json()["media_id"] == media1  # la file démarre en tête
+
+    with db_session_factory() as session:
+        row = session.get(Device, device["device_id"])
+        assert row.queue_auto_advance is True  # toute la file doit défiler
+        assert row.current_media_id == media1
+
+    # Le média de tête atteint son seuil → passage au suivant de la file.
+    heartbeat = client.post(
+        f"/api/devices/{device['device_id']}/heartbeat",
+        headers=headers,
+        json={"state": "playing", "current_media_id": media1},
+    )
+    assert heartbeat.status_code == 200
+    with db_session_factory() as session:
+        row = session.get(Device, device["device_id"])
+        row.queue_started_at = row.queue_started_at - dt.timedelta(seconds=60)
+        session.commit()
+    heartbeat = client.post(
+        f"/api/devices/{device['device_id']}/heartbeat",
+        headers=headers,
+        json={"state": "playing", "current_media_id": media1},
+    )
+    assert heartbeat.status_code == 200
+    with db_session_factory() as session:
+        row = session.get(Device, device["device_id"])
+        assert row.current_media_id == media2  # enchaînement sur le 2e média
+
+
+def test_queue_stop_disables_auto_advance(client: TestClient, db_session_factory):
+    """Après « Arrêter la diffusion », la file ne défile plus toute seule."""
+    from elyon_api.models import Device
+
+    _org_setup(client)
+    device = _approved_device(client, "SER-QUEUE-3")
+    media1 = _upload_png(client, "qs1.png")["id"]
+    media2 = _upload_png(client, "qs2.png")["id"]
+    for media_id in (media1, media2):
+        auth_json(client, "POST", f"/api/devices/{device['device_id']}/queue",
+                  json={"media_id": media_id})
+    played = auth_json(client, "POST", f"/api/devices/{device['device_id']}/queue/play")
+    assert played.status_code == 201, played.text
+    stopped = auth_json(
+        client, "POST", f"/api/devices/{device['device_id']}/queue/stop"
+    )
+    assert stopped.status_code == 201, stopped.text
+    with db_session_factory() as session:
+        row = session.get(Device, device["device_id"])
+        assert row.queue_auto_advance is False
+        assert row.current_media_id is None
+
+
 def test_auto_advance_allowed_respects_stop_freeze():
     import datetime as dt
 

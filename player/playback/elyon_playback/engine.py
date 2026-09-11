@@ -241,7 +241,9 @@ class PlaybackEngine:
                 }
             )
             try:
-                self.renderer.play_url(item.url, timeout_seconds=duration)
+                self._play_freezable(
+                    lambda: self.renderer.play_url(item.url, timeout_seconds=duration)
+                )
             except NotImplementedError:
                 # Renderer sans navigateur (mpv) : on passe sans tuer la boucle.
                 self.sleep_fn(min(duration, 1.0))
@@ -264,10 +266,55 @@ class PlaybackEngine:
         )
         self._write_screen_frame(item, display_path)
         if item.kind == "video":
-            self.renderer.play_video(item.path)
+            self._play_video_freezable(item.path)
         else:
             duration = item.duration_seconds or 10.0
             self.renderer.play_image(display_path, duration)
+
+    def _play_freezable(self, fn: Callable[[], None]) -> None:
+        """Joue un rendu bloquant avec gel immédiat sur « Pause ».
+
+        Le rendu (mpv/Chromium) tourne dans un thread ; le thread moteur
+        surveille le fichier `pause` et, à chaque activation, appelle
+        `hold_paused_frame` du renderer (mpv IPC `set pause`, sinon SIGSTOP
+        du processus média de ce player). Au dégel, la lecture reprend
+        exactement là où elle en était — `play_video`/`play_url` ne
+        retournent qu'une fois le média fini, gel compris.
+        """
+        hold = getattr(self.renderer, "hold_paused_frame", None)
+        if hold is None:
+            fn()
+            return
+        import threading
+
+        released = threading.Event()
+        error: BaseException | None = None
+
+        def run() -> None:
+            nonlocal error
+            try:
+                fn()
+            except Exception as exc:  # noqa: BLE001 — remonté après join
+                error = exc
+            finally:
+                released.set()
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        while not released.is_set():
+            if self._is_paused():
+                hold(lambda: self._is_paused(), keepalive=self._touch_heartbeat)
+            else:
+                released.wait(0.2)
+        if error is not None:
+            raise error
+
+    def _touch_heartbeat(self) -> None:
+        """Rafraîchit le heartbeat de supervision (pauses longues)."""
+        touch_heartbeat(self.heartbeat_file)
+
+    def _play_video_freezable(self, path: Path) -> None:
+        self._play_freezable(lambda: self.renderer.play_video(path))
 
     def _play_item_with_ticker(self, item: PlayItem) -> None:
         duration = item.duration_seconds or 10.0
@@ -374,8 +421,10 @@ class PlaybackEngine:
                 }
             )
             try:
-                self.renderer.play_url(
-                    url, timeout_seconds=duration_f or self.show_loop_seconds
+                self._play_freezable(
+                    lambda: self.renderer.play_url(
+                        url, timeout_seconds=duration_f or self.show_loop_seconds
+                    )
                 )
             except NotImplementedError:
                 self.sleep_fn(1.0)
@@ -410,7 +459,7 @@ class PlaybackEngine:
         if duration_f is not None:
             # One-shot : durée fixe puis retour au planning.
             if kind == "video":
-                self.renderer.play_video(path)
+                self._play_video_freezable(path)
             else:
                 self.renderer.play_image(display_path, duration_f)
             self.show_clear(self._data_dir())
@@ -418,7 +467,7 @@ class PlaybackEngine:
             self._publish_status({"media_id": None, "state": "idle"})
             return
         if kind == "video":
-            self.renderer.play_video(path)
+            self._play_video_freezable(path)
         else:
             self.renderer.play_image(display_path, self.show_loop_seconds)
 
@@ -426,8 +475,9 @@ class PlaybackEngine:
         """Gèle l'affichage courant tant que la pause est active.
 
         Images/pages : on réaffiche la trame (mpv ne la conserve pas après sa
-        durée). Vidéo : la lecture mpv n'est pas interruptible en cours, on se
-        contente de ne pas avancer une fois l'élément terminé.
+        durée). Vidéo : la lecture mpv est figée via `_play_video_freezable`
+        (IPC/SIGSTOP) — ce chemin ne concerne que les vidéos démarrées avant
+        l'activation du mécanisme de gel.
         """
         if item is not None and item.kind in ("image", "page"):
             display_path = self._display_path(item)

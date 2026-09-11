@@ -904,6 +904,221 @@ class TestWidgets:
         assert read_widget_feed(tmp_path) is None
 
 
+def test_video_freezes_while_paused_and_resumes(tmp_path):
+    """Pause : la vidéo en cours est figée (hold_paused_frame) jusqu'au dégel.
+
+    Le moteur appelle `hold_paused_frame` du renderer tant que le fichier
+    `pause` existe ; le rendu mpv (bloquant) reprend ensuite là où il en
+    était — l'élément n'est « terminé » qu'après le dégel.
+    """
+    import threading
+    import time as _time
+
+    from elyon_playback.engine import PlaybackEngine, PlayItem
+
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake")
+    pause_file = tmp_path / "pause"
+    hold_entered = threading.Event()
+    hold_exit = threading.Event()
+
+    class FreezingRenderer(FakeRenderer):
+        def play_video(self, path: Path) -> None:
+            self.events.append(("video", path))
+            _time.sleep(0.3)  # rendu bloquant comme le vrai mpv
+
+        def hold_paused_frame(self, check_paused, keepalive=None) -> None:  # type: ignore[no-untyped-def]
+            self.events.append(("hold-paused", None))
+            hold_entered.set()
+            while check_paused():
+                hold_exit.wait(0.05)
+
+    renderer = FreezingRenderer()
+    engine = PlaybackEngine(
+        renderer=renderer,
+        layout_provider=lambda: None,
+        heartbeat_file=tmp_path / "hb",
+        blob_dir=tmp_path,
+        stop_check=lambda: False,
+        sleep_fn=lambda _s: None,
+        pause_file=pause_file,
+    )
+    done = threading.Event()
+
+    def play() -> None:
+        try:
+            engine.play_item(
+                PlayItem(kind="video", path=video, duration_seconds=None,
+                         media_id="v1", name="clip")
+            )
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=play, daemon=True)
+    thread.start()
+    _time.sleep(0.1)  # la lecture démarre
+    pause_file.write_text("1", encoding="utf-8")  # pause EN COURS de lecture
+    assert hold_entered.wait(5.0), "le gel doit démarrer pendant la vidéo"
+    pause_file.unlink()  # dégel : la lecture reprend
+    hold_exit.set()
+    assert done.wait(5.0), "play_item doit se terminer après le dégel"
+    assert ("hold-paused", None) in renderer.events
+    assert ("video", video) in renderer.events
+
+
+def test_video_plays_without_hold_when_renderer_lacks_it(tmp_path):
+    """Renderer sans `hold_paused_frame` (ancien plugin) : lecture normale."""
+    from elyon_playback.engine import PlaybackEngine, PlayItem
+
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"fake")
+
+    class BareRenderer(FakeRenderer):
+        hold_paused_frame = None  # type: ignore[assignment]
+
+    engine = PlaybackEngine(
+        renderer=BareRenderer(),
+        layout_provider=lambda: None,
+        heartbeat_file=tmp_path / "hb",
+        blob_dir=tmp_path,
+        stop_check=lambda: False,
+        sleep_fn=lambda _s: None,
+    )
+    engine.play_item(
+        PlayItem(kind="video", path=video, duration_seconds=None,
+                 media_id="v1", name="clip")
+    )
+    assert engine.renderer.events == [("video", video)]
+
+
+def test_url_not_implemented_error_propagates_after_freezable(tmp_path):
+    """MpvRenderer + média web : NotImplementedError remontée au moteur.
+
+    Elle est interceptée par `play_item` (sleep court) — pas de boucle
+    chaude ni de perte de l'erreur.
+    """
+    import pytest as _pytest
+
+    from elyon_playback.engine import PlaybackEngine, PlayItem
+
+    class NoUrlRenderer(FakeRenderer):
+        def play_url(self, url: str, timeout_seconds: float | None = None) -> None:
+            raise NotImplementedError("Utiliser ChromiumRenderer pour les URL")
+
+        hold_paused_frame = None  # type: ignore[assignment]
+
+    engine = PlaybackEngine(
+        renderer=NoUrlRenderer(),
+        layout_provider=lambda: None,
+        heartbeat_file=tmp_path / "hb",
+        blob_dir=tmp_path,
+        stop_check=lambda: False,
+        sleep_fn=lambda _s: None,
+    )
+    engine.play_item(
+        PlayItem(kind="url", path=tmp_path, url="https://example.org",
+                 duration_seconds=5, media_id="w1", name="web")
+    )
+    with _pytest.raises(NotImplementedError):
+        engine._play_freezable(lambda: (_ for _ in ()).throw(NotImplementedError("x")))
+
+
+def test_mpv_ipc_freeze_round_trip(tmp_path):
+    """Gel SIGSTOP/SIGCONT d'un faux mpv média appartenant à CE player.
+
+    `mpv_media_pids(socket_hint)` ne cible que les mpv portant le chemin du
+    socket IPC de CE renderer dans leur ligne de commande ; un écran noir
+    (`--image-display-duration` + png) est ignoré.
+    """
+    import os
+    import signal
+    import subprocess
+    import time
+
+    from elyon_playback.renderers import MpvRenderer, mpv_media_pids
+
+    renderer = MpvRenderer()
+    hint = str(renderer._ipc_socket_path)
+    # Faux mpv « média » : os.execv requalifie argv[0] en « mpv », le
+    # « script » (chemin absolu, sleep 30) joue le rôle du fichier média et
+    # le hint IPC figure dans la cmdline comme le vrai player.
+    media = tmp_path / "media.mp4"
+    media.write_text("import time; time.sleep(30)\n")
+    fake = subprocess.Popen(  # noqa: S603
+        ["python3", "-c",
+         "import os, sys;"
+         f" os.execv(sys.executable, ['mpv', {str(media)!r}, '{hint}'])"],
+        stdin=subprocess.DEVNULL,
+    )
+    try:
+        time.sleep(0.3)  # laisse le shell exécuter `exec -a mpv`
+        cmdline = open(f"/proc/{fake.pid}/cmdline", "rb").read()  # noqa: SIM115
+        parts = cmdline.decode().split("\0")
+        assert parts[0] == "mpv"
+        # PIDs de CE player : le faux média est repéré.
+        pids = mpv_media_pids(hint)
+        assert fake.pid in pids
+        # Un écran noir mpv (png) est ignoré : argv contient le png, pas le hint.
+        blank_args = ["mpv", "--image-display-duration=inf", "/tmp/black.png"]
+        assert not mpv_media_pids(hint) or all(
+            pid == fake.pid for pid in mpv_media_pids(hint)
+        )
+        assert not _cmdline_is_media(blank_args)
+        # SIGSTOP/SIGCONT (mécanisme de repli du renderer) :
+        os.kill(fake.pid, signal.SIGSTOP)
+        time.sleep(0.3)
+        state = open(f"/proc/{fake.pid}/stat").read().split()[2]  # noqa: SIM115
+        assert state == "T"  # T = stopped
+        os.kill(fake.pid, signal.SIGCONT)
+        time.sleep(0.3)
+        state = open(f"/proc/{fake.pid}/stat").read().split()[2]  # noqa: SIM115
+        assert state in ("S", "R")
+    finally:
+        fake.kill()
+        fake.wait(timeout=5)
+
+
+def _cmdline_is_media(parts: list[str]) -> bool:
+    from elyon_playback.renderers import is_video_process_cmdline
+
+    return is_video_process_cmdline(parts)
+
+
+def test_mpv_ipc_command_no_socket_returns_false(tmp_path):
+    """Sans socket IPC présent : la commande mpv est un no-op silencieux."""
+    from elyon_playback.renderers import mpv_ipc_command
+
+    assert mpv_ipc_command("set pause yes", tmp_path / "absent.sock", 0.1) is False
+
+
+def test_mpv_ipc_command_round_trip(tmp_path):
+    """Un serveur unix qui répond `{"error":"success"}` valide la commande."""
+    import socket as socket_mod
+    import threading
+
+    from elyon_playback.renderers import mpv_ipc_command
+
+    sock_path = tmp_path / "mpv.sock"
+    server = socket_mod.socket(socket_mod.AF_UNIX, socket_mod.SOCK_STREAM)
+    server.bind(str(sock_path))
+    server.listen(1)
+    got: list[bytes] = []
+
+    def serve() -> None:
+        conn, _ = server.accept()
+        with conn:
+            data = conn.recv(1024)
+            got.append(data)
+            conn.sendall(b'{"error":"success"}\n')
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    assert mpv_ipc_command("set pause yes", sock_path, 2.0) is True
+    thread.join(timeout=2)
+    assert b'"set pause yes"' in got[0]
+    server.close()
+
+
 def test_day_label_uses_real_weekday():
     """Le libellé doit correspondre au vrai jour de la date ISO."""
     from datetime import datetime

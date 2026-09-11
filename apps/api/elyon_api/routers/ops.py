@@ -465,7 +465,7 @@ def queue_remove(
 @router.post("/devices/{device_id}/queue/play", status_code=201)
 def queue_play(
     device_id: str,
-    body: dict,
+    body: dict | None = None,
     user: User = Depends(require_permission(Permission.DEVICE_COMMAND)),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -478,7 +478,7 @@ def queue_play(
     items = _device_queue_items(device)
     if not items:
         raise HTTPException(status_code=400, detail="File vide")
-    media_id = str(body.get("media_id") or "") or items[0]["media_id"]
+    media_id = str((body or {}).get("media_id") or "") or items[0]["media_id"]
     if not any(i["media_id"] == media_id for i in items):
         raise HTTPException(status_code=404, detail="Média hors file")
     media = db.get(Media, media_id)

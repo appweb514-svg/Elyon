@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
+import socket
 import subprocess
 import time
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
@@ -21,12 +25,26 @@ class Renderer(Protocol):
 
     def unblank(self) -> None: ...
 
+    def hold_paused_frame(
+        self,
+        check_paused: Callable[[], bool],
+        keepalive: Callable[[], None] | None = None,
+    ) -> None:
+        """Figé par le « Pause » back-office : bloque le rendu courant.
+
+        `keepalive` (si fourni) est appelé pendant l'attente : le moteur y
+        rafraîchit son heartbeat de supervision pendant les pauses longues.
+        """
+
 
 class MpvRenderer:
     """Rendu via mpv (vidéo H.264/AAC, images, pages PDF pré-converties).
 
     `play_image`/`play_video` sont bloquants jusqu'à la fin de l'élément ;
     `blank`/`unblank` sont asynchrones (processus dédié écran noir).
+    Le gel « Pause » s'appuie sur l'IPC mpv (`--input-ipc-server`) : la
+    lecture en cours est figée immédiatement à l'image courante puis
+    relancée au dégel, sans attendre la fin de l'élément.
     """
 
     def __init__(self, binary: str = "mpv", extra_args: list[str] | None = None) -> None:
@@ -39,16 +57,31 @@ class MpvRenderer:
         ]
         self._blank_process: subprocess.Popen[bytes] | None = None
         self._black_png: Path | None = None
+        self._ipc_socket = uuid.uuid4().hex
+        self._ipc_socket_path = Path(f"/tmp/elyon-mpv-{self._ipc_socket}.sock")
+        self._ipc_args = [
+            f"--input-ipc-server={self._ipc_socket_path}",
+            "--idle=no",
+        ]
 
     def _run(self, args: list[str]) -> None:
+        socket_path = self._ipc_socket_path
+        try:
+            socket_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         completed = subprocess.run(  # noqa: S603
-            [self.binary, *self.extra_args, *args],
+            [self.binary, *self.extra_args, *self._ipc_args, *args],
             check=False,
             stdin=subprocess.DEVNULL,
         )
         if completed.returncode not in (0, 4):
             # 4 = fin demandée (idle/quit) ; les autres codes sont des erreurs.
             raise RuntimeError(f"mpv a échoué (code {completed.returncode})")
+        try:
+            socket_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     def play_image(self, path: Path, duration_seconds: float) -> None:
         self._stop_blank()
@@ -61,6 +94,50 @@ class MpvRenderer:
     def play_url(self, url: str, timeout_seconds: float | None = None) -> None:
         # Les URL web sont jouées par Chromium kiosque, pas par mpv.
         raise NotImplementedError("Utiliser ChromiumRenderer pour les URL")
+
+    def hold_paused_frame(
+        self,
+        check_paused: Callable[[], bool],
+        keepalive: Callable[[], None] | None = None,
+    ) -> None:
+        """Figé par le « Pause » back-office : bloque le rendu courant.
+
+        Ordre des mécanismes, du plus réactif au plus universel :
+        1. IPC mpv : `set pause yes` fige la lecture à l'image courante ;
+           `set pause no` au dégel, la vidéo reprend où elle en était.
+        2. Sans IPC (socket indisponible, mpv trop vieux) : SIGSTOP/SIGCONT
+           sur LE processus mpv média de ce player (socket IPC en cmdline).
+        Tant que `check_paused()` reste vrai, on maintient le gel.
+        """
+        hint = str(self._ipc_socket_path)
+        pids: list[int] = []
+        frozen_ipc = False
+        # 1) IPC : fige la lecture à l'image courante (le plus précis).
+        if mpv_ipc_command("set pause yes", self._ipc_socket_path, 1.0):
+            frozen_ipc = True
+        else:
+            # 2) Repli : SIGSTOP sur le mpv média de ce player.
+            pids = mpv_media_pids(hint)
+            for pid in pids:
+                try:
+                    os.kill(pid, signal.SIGSTOP)
+                except OSError:
+                    continue
+            if not pids:
+                return  # rien à figer : l'élément s'est déjà terminé
+        try:
+            while check_paused():
+                if keepalive is not None:
+                    keepalive()
+                time.sleep(0.2)
+        finally:
+            if frozen_ipc:
+                mpv_ipc_command("set pause no", self._ipc_socket_path, 1.0)
+            for pid in pids:
+                try:
+                    os.kill(pid, signal.SIGCONT)
+                except OSError:
+                    continue
 
     def blank(self) -> None:
         """Affiche un écran noir (asynchrone, idempotent)."""
@@ -102,11 +179,81 @@ def _black_png() -> Path:
     return Path(handle.name)
 
 
+def mpv_ipc_command(command: str, socket_path: Path, timeout: float = 2.0) -> bool:
+    """Envoie une commande mpv via l'IPC unix (fire-and-forget).
+
+    Retourne True si mpv a répondu ``success``. Les erreurs (socket absent,
+    timeout, mpv sans IPC) sont silencieuses : le gel reste piloté par le
+    fichier `pause` dans tous les cas.
+    """
+    if not socket_path.exists():
+        return False
+    deadline = time.monotonic() + timeout
+    message = f'{{ "command": ["{command}"] }}\n'
+    while time.monotonic() < deadline:
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+                conn.settimeout(0.5)
+                conn.connect(str(socket_path))
+                conn.sendall(message.encode("utf-8"))
+                reply = conn.makefile("r", encoding="utf-8").readline()
+        except OSError:
+            time.sleep(0.1)
+            continue
+        try:
+            return bool(json.loads(reply).get("error") == "success")
+        except (json.JSONDecodeError, ValueError):
+            return False
+    return False
+
+
+def mpv_media_pids(socket_hint: str | None = None) -> list[int]:
+    """PIDs mpv en train de lire un média (hors écrans noirs).
+
+    ``socket_hint`` : restreint aux processus de CE player (le chemin du
+    socket IPC figure dans leur ligne de commande) — évite de figer le mpv
+    d'un autre player hébergé sur la même machine. ``None`` : tous les mpv
+    « média » (repli mono-player, ex. mpv trop vieux pour l'IPC).
+    """
+    found: list[int] = []
+    try:
+        entries = list(Path("/proc").iterdir())
+    except OSError:
+        return found
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            cmdline = (entry / "cmdline").read_bytes()
+        except OSError:
+            continue
+        parts = cmdline.decode("utf-8", errors="replace").split("\0")
+        if not parts or "mpv" not in parts[0]:
+            continue
+        if socket_hint is not None and not any(socket_hint in p for p in parts[1:]):
+            continue
+        if is_video_process_cmdline(parts):
+            found.append(int(entry.name))
+    return found
+
+
+def is_video_process_cmdline(parts: list[str]) -> bool:
+    """Commande mpv = lecture d'un média ? (ignore les affichages noir fixe)."""
+    for part in parts[1:]:
+        if not part or part.startswith("--"):
+            continue
+        if part.startswith("/") or part.startswith("./"):
+            return not part.endswith(".png")
+        return False
+    return False
+
+
 class ChromiumRenderer:
     """Kiosque Chromium pour les éléments web (en ligne uniquement)."""
 
     def __init__(self, binary: str = "chromium-browser") -> None:
         self.binary = binary
+        self._last_url_pid: int | None = None
 
     def play_url(self, url: str, timeout_seconds: float | None = None) -> None:
         process = subprocess.Popen(  # noqa: S603
@@ -120,6 +267,7 @@ class ChromiumRenderer:
             ],
             stdin=subprocess.DEVNULL,
         )
+        self._last_url_pid = process.pid
         try:
             if timeout_seconds is None:
                 process.wait()
@@ -133,6 +281,35 @@ class ChromiumRenderer:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 process.kill()
+
+    def hold_paused_frame(
+        self,
+        check_paused: Callable[[], bool],
+        keepalive: Callable[[], None] | None = None,
+    ) -> None:
+        """Figé par le « Pause » back-office : bloque le rendu courant.
+
+        Le kiosque Chromium est suspendu (SIGSTOP) : la page affichée ne
+        bouge plus ; SIGCONT au dégel. Appelé depuis le thread lecture du
+        moteur pendant que `play_url` attend dans le thread vidéo.
+        """
+        pid = self._last_url_pid
+        if pid is None:
+            return
+        try:
+            os.kill(pid, signal.SIGSTOP)
+        except OSError:
+            pass
+        try:
+            while check_paused():
+                if keepalive is not None:
+                    keepalive()
+                time.sleep(0.2)
+        finally:
+            try:
+                os.kill(pid, signal.SIGCONT)
+            except OSError:
+                pass
 
 
 class BlankState:
@@ -236,6 +413,15 @@ class DummyRenderer:
     def unblank(self) -> None:
         self.events.append(("unblank", None))
         self._blanked = False
+
+    def hold_paused_frame(
+        self,
+        check_paused: Callable[[], bool],
+        keepalive: Callable[[], None] | None = None,
+    ) -> None:
+        self.events.append(("hold-paused", None))
+        while check_paused():
+            self._sleep(0.2)
 
 
 def touch_heartbeat(path: Path) -> None:
