@@ -98,6 +98,18 @@ class MediaStore:
         """Layout de lecture : associe chaque média à ses blobs locaux."""
         media = []
         for entry in payload.get("media", []):
+            if entry["kind"] == "web":
+                media.append(
+                    {
+                        "media_id": entry["media_id"],
+                        "name": entry["name"],
+                        "kind": "web",
+                        "main_blob": "",
+                        "page_blobs": [],
+                        "url": entry.get("url", ""),
+                    }
+                )
+                continue
             media.append(
                 {
                     "media_id": entry["media_id"],
@@ -223,6 +235,8 @@ class Synchronizer:
         """Mappe sha256 → spécification pour chaque fichier du manifeste."""
         needed: dict[str, FileSpec] = {}
         for entry in payload.get("media", []):
+            if entry.get("kind") == "web":
+                continue
             needed[entry["sha256"]] = FileSpec(
                 url=entry["url"], sha256=entry["sha256"], size_bytes=entry["size_bytes"]
             )
