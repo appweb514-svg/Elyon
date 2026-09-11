@@ -364,7 +364,11 @@ def test_process_media_with_nonlocal_storage(client: TestClient, settings, db_se
 
 
 def test_queue_auto_advance_persists_state_in_db(client: TestClient, db_session_factory):
-    """L'auto-enchaînement doit fonctionner entre deux répliques (état en base)."""
+    """L'auto-enchaînement doit fonctionner entre deux répliques (état en base).
+
+    Déclenché par « Lire tous les médias » (queue/play SANS media_id) — le
+    play individuel d'une ligne n'enchaîne plus tout seul.
+    """
     import datetime as dt
 
     from elyon_api.models import Device
@@ -382,12 +386,8 @@ def test_queue_auto_advance_persists_state_in_db(client: TestClient, db_session_
             json={"media_id": media_id},
         )
         assert queued.status_code == 201, queued.text
-    played = auth_json(
-        client,
-        "POST",
-        f"/api/devices/{device['device_id']}/queue/play",
-        json={"media_id": media1},
-    )
+    # « Lire tous les médias » : la file entière défile.
+    played = auth_json(client, "POST", f"/api/devices/{device['device_id']}/queue/play")
     assert played.status_code == 201, played.text
 
     heartbeat = client.post(
@@ -496,6 +496,128 @@ def test_queue_stop_disables_auto_advance(client: TestClient, db_session_factory
         row = session.get(Device, device["device_id"])
         assert row.queue_auto_advance is False
         assert row.current_media_id is None
+
+
+def test_queue_play_single_media_keeps_screen(client: TestClient, db_session_factory):
+    """Bouton ▶ d'une ligne : ce média seul reste à l'écran.
+
+    Aucun auto-enchaînement : les autres médias de la file ne doivent PAS
+    se lancer tout seuls, même après le seuil d'affichage dépassé.
+    """
+    import datetime as dt
+
+    from elyon_api.models import Device
+
+    _org_setup(client)
+    device = _approved_device(client, "SER-QUEUE-4")
+    headers = {"Authorization": f"Bearer {device['token']}"}
+    media1 = _upload_png(client, "q1s.png")["id"]
+    media2 = _upload_png(client, "q2s.png")["id"]
+    for media_id in (media1, media2):
+        auth_json(client, "POST", f"/api/devices/{device['device_id']}/queue",
+                  json={"media_id": media_id})
+    played = auth_json(
+        client,
+        "POST",
+        f"/api/devices/{device['device_id']}/queue/play",
+        json={"media_id": media1},  # bouton ▶ d'une ligne
+    )
+    assert played.status_code == 201, played.text
+
+    with db_session_factory() as session:
+        row = session.get(Device, device["device_id"])
+        assert row.queue_auto_advance is False  # pas d'enchaînement auto
+
+    # Simule un curseur d'enchaînement actif (ne serait pas créé sans auto)
+    # puis seuil largement dépassé : le média suivant ne doit PAS se lancer.
+    heartbeat = client.post(
+        f"/api/devices/{device['device_id']}/heartbeat",
+        headers=headers,
+        json={"state": "playing", "current_media_id": media1},
+    )
+    assert heartbeat.status_code == 200
+    with db_session_factory() as session:
+        row = session.get(Device, device["device_id"])
+        row.queue_started_media_id = media1
+        row.queue_started_at = dt.datetime.now(dt.UTC) - dt.timedelta(seconds=60)
+        session.commit()
+    heartbeat = client.post(
+        f"/api/devices/{device['device_id']}/heartbeat",
+        headers=headers,
+        json={"state": "playing", "current_media_id": media1},
+    )
+    assert heartbeat.status_code == 200
+    with db_session_factory() as session:
+        row = session.get(Device, device["device_id"])
+        assert row.current_media_id == media1  # inchangé : reste à l'écran
+    commands = client.get(
+        f"/api/devices/{device['device_id']}/commands", headers=headers
+    ).json()
+    assert not any(
+        command["type"] == "show" and media2 in (command["payload"] or "")
+        for command in commands
+    )
+
+
+def test_queue_threshold_multipage_pdf_is_pages_times_five(
+    client: TestClient, db_session_factory
+):
+    """En mode « Lire tous les médias », un PDF multi-pages n'est pas coupé
+    au milieu : son seuil d'enchaînement vaut pages × 5 s."""
+    import datetime as dt
+    import json as json_mod
+
+    from elyon_api.models import Device, Media, MediaKind
+    from elyon_api.routers.ops import _queue_threshold_seconds
+
+    _org_setup(client)
+    device = _approved_device(client, "SER-QUEUE-5")
+    headers = {"Authorization": f"Bearer {device['token']}"}
+    created = _upload_png(client, "docmulti.pdf")["id"]
+    with db_session_factory() as session:
+        media = session.get(Media, created)
+        media.kind = MediaKind.PDF
+        media.pages_json = json_mod.dumps(
+            ["pdf/x/page-1.png", "pdf/x/page-2.png", "pdf/x/page-3.png"]
+        )
+        session.commit()
+
+    auth_json(
+        client,
+        "POST",
+        f"/api/devices/{device['device_id']}/queue",
+        json={"media_id": created},
+    )
+    played = auth_json(client, "POST", f"/api/devices/{device['device_id']}/queue/play")
+    assert played.status_code == 201, played.text
+
+    with db_session_factory() as session:
+        row = session.get(Device, device["device_id"])
+        settings = type("S", (), {"media_storage_root": ".", "public_base_url": ""})()
+        threshold = _queue_threshold_seconds(session, row, settings)
+        # 3 pages × 5 s = 15 s (et non 10 s image) : le document est entier.
+        assert threshold == 15.0
+
+    # Le média de tête (PDF) dépasse 10 s mais pas 15 s : pas d'enchaînement.
+    heartbeat = client.post(
+        f"/api/devices/{device['device_id']}/heartbeat",
+        headers=headers,
+        json={"state": "playing", "current_media_id": created},
+    )
+    assert heartbeat.status_code == 200
+    with db_session_factory() as session:
+        row = session.get(Device, device["device_id"])
+        row.queue_started_at = dt.datetime.now(dt.UTC) - dt.timedelta(seconds=12)
+        session.commit()
+    heartbeat = client.post(
+        f"/api/devices/{device['device_id']}/heartbeat",
+        headers=headers,
+        json={"state": "playing", "current_media_id": created},
+    )
+    assert heartbeat.status_code == 200
+    with db_session_factory() as session:
+        row = session.get(Device, device["device_id"])
+        assert row.current_media_id == created  # le PDF n'est pas coupé
 
 
 def test_auto_advance_allowed_respects_stop_freeze():

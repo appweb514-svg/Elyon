@@ -626,9 +626,11 @@ async function playItem(
   }
   if (item.kind === "pdf" || item.kind === "office" || item.kind === "pages") {
     // Document multi-pages (SHOW) : toutes les pages défilent, 5 s par
-    // défaut, avant de passer au média suivant.
+    // défaut, avant de passer au média suivant. En pause, la page courante
+    // reste figée : la boucle attend le dégel sans avancer.
     const count = Math.max(1, item.page_count ?? 1);
-    for (let page = 0; page < count && alive(); page++) {
+    let page = 0;
+    while (page < count && alive()) {
       await playItem(
         s,
         {
@@ -643,6 +645,15 @@ async function playItem(
         onVideo,
         onPage
       );
+      if (!alive()) return;
+      // Pause arrivée ENTRE deux pages : on attend le dégel ici (la page
+      // courante reste affichée à l'écran). Pendant l'affichage d'une page,
+      // waitWithPause gèle déjà la durée restante.
+      while (paused() && alive()) {
+        await sleep(200);
+      }
+      if (!alive()) return;
+      page += 1;
     }
     return;
   }

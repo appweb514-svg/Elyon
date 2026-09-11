@@ -222,7 +222,10 @@ def _device_queue_items(device: Device) -> list[dict[str, Any]]:
     return [i for i in items if isinstance(i, dict) and i.get("media_id")]
 
 
-def _issue_show(db: Session, device: Device, media: Media, user: User) -> Command:
+def _issue_show(
+    db: Session, device: Device, media: Media, user: User,
+    auto_advance: bool = False,
+) -> Command:
     for stale in db.scalars(
         select(Command).where(
             Command.device_id == device.id,
@@ -243,7 +246,9 @@ def _issue_show(db: Session, device: Device, media: Media, user: User) -> Comman
     device.current_media_id = media.id
     device.player_state = "playing"
     device.is_paused = False
-    device.queue_auto_advance = True
+    # Auto-enchaînement UNIQUEMENT sur « Lire tous les médias » : un play
+    # individuel garde le média à l'écran jusqu'à une nouvelle action.
+    device.queue_auto_advance = auto_advance
     audit(db, "media.show", "media", media.id, detail=f"device={device.id} {media.name}", user=user)
     db.commit()
     db.refresh(cmd)
@@ -494,7 +499,10 @@ def queue_play(
     items = [i for i in items if i["media_id"] != media_id]
     items.insert(0, {"media_id": media_id})
     device.queue_json = json.dumps(items)
-    cmd = _issue_show(db, device, media, user)
+    # media_id explicite = bouton ▶ d'une ligne : ce média SEUL reste à
+    # l'écran. Sans media_id = « Lire tous les médias » : toute la file défile.
+    auto_advance = not str((body or {}).get("media_id") or "")
+    cmd = _issue_show(db, device, media, user, auto_advance=auto_advance)
     return {"command_id": cmd.id, "media_id": media.id}
 
 
@@ -1446,6 +1454,17 @@ def _queue_threshold_seconds(db: Session, device: Device, settings) -> float:
             pass
     media = db.get(Media, device.current_media_id) if device.current_media_id else None
     if media is None or media.kind != MediaKind.VIDEO:
+        # PDF/Office multi-pages : la durée réelle est pages × 5 s — sinon
+        # l'enchaînement couperait le document au milieu de son défilement.
+        if (
+            media is not None
+            and media.kind in (MediaKind.PDF, MediaKind.OFFICE)
+            and media.pages_json
+        ):
+            try:
+                return max(5.0, 5.0 * len(json.loads(media.pages_json)))
+            except (OSError, ValueError, TypeError):
+                pass
         return 10.0
     duration: float | None = None
     try:

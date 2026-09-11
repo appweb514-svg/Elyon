@@ -252,19 +252,31 @@ class PlaybackEngine:
         if item.kind == "pages" and len(item.page_paths) > 1:
             # Document multi-pages : chaque page est affichée page_duration
             # secondes (5 s par défaut), avec suivi de la page courante.
+            # La pause fige le défilement : tant qu'elle est active, la page
+            # courante reste à l'écran (le gel est pris en charge par le
+            # rendu page, et on n'avance pas à la page suivante).
             page_duration = item.duration_seconds or 5.0
-            for index, page_path in enumerate(item.page_paths):
+            index = 0
+            while index < len(item.page_paths):
                 if self._should_stop():
                     return
+                # Pause : la page courante reste figée à l'écran, le
+                # défilement reprend à la même page après le dégel.
+                if self._is_paused():
+                    self._pause_wait(item, page_index=index)
+                    continue
                 page_item = PlayItem(
                     kind="page",
-                    path=page_path,
+                    path=item.page_paths[index],
                     duration_seconds=page_duration,
                     media_id=item.media_id,
                     name=f"{item.name} p.{index + 1}",
                     page_index=index,
                 )
                 self.play_item(page_item)
+                if self._is_paused():
+                    continue  # pause survenue pendant la page : on la rejoue
+                index += 1
             return
         # Widget « vivant » (horloge, météo, ticker RSS) : l'image est
         # recomposée à intervalles réguliers pour un affichage en temps réel.
@@ -287,7 +299,30 @@ class PlaybackEngine:
             self._play_video_freezable(item.path)
         else:
             duration = item.duration_seconds or 10.0
-            self.renderer.play_image(display_path, duration)
+            self._play_freezable(
+                lambda: self.renderer.play_image(display_path, duration)
+            )
+
+    def _pause_wait(self, item: PlayItem, page_index: int | None = None) -> None:
+        """Boucle d'attente pendant la pause (page courante conservée).
+
+        La trame affichée reste à l'écran (réaffichée pour mpv), l'état
+        publié est « paused » avec la page courante — l'aperçu suit.
+        """
+        display_path = self._display_path(item)
+        self._publish_status(
+            {
+                "media_id": item.media_id or None,
+                "name": item.name,
+                "kind": item.kind,
+                "path": str(display_path),
+                "state": "paused",
+                "page_index": page_index if item.kind == "pages" else item.page_index,
+            }
+        )
+        while self._is_paused() and not self._should_stop():
+            touch_heartbeat(self.heartbeat_file)
+            self.sleep_fn(0.2)
 
     def _play_freezable(self, fn: Callable[[], None]) -> None:
         """Joue un rendu bloquant avec gel immédiat sur « Pause ».

@@ -236,6 +236,87 @@ def test_show_multipage_respects_duration(tmp_path):
     ]
 
 
+def test_show_multipage_freezes_while_paused(tmp_path):
+    """Pause pendant un document multi-pages : le défilement se fige.
+
+    La page courante reste affichée (état « paused », même page publiée) ;
+    au dégel, la lecture reprend à la MÊME page, pas à la suivante.
+    """
+    import json
+    import threading
+
+    from elyon_playback.engine import PlaybackEngine
+
+    renderer = FakeRenderer()
+    show_dir = tmp_path / "show"
+    show_dir.mkdir(parents=True, exist_ok=True)
+    p1 = show_dir / "doc.p0"
+    p2 = show_dir / "doc.p1"
+    p3 = show_dir / "doc.p2"
+    for p in (p1, p2, p3):
+        p.write_bytes(b"page")
+    (show_dir / "request.json").write_text(
+        json.dumps(
+            {
+                "media_id": "doc",
+                "kind": "pages",
+                "page_blobs": [str(p1), str(p2), str(p3)],
+            }
+        ),
+        encoding="utf-8",
+    )
+    pause_file = tmp_path / "pause"
+    pause_file.write_text("1", encoding="utf-8")  # pause dès le départ
+
+    status = tmp_path / "now-playing.json"
+    engine = PlaybackEngine(
+        renderer=renderer,
+        layout_provider=lambda: None,
+        heartbeat_file=tmp_path / "hb",
+        blob_dir=tmp_path / "blobs",  # data_dir = tmp_path (spec show dedans)
+        stop_check=lambda: False,
+        sleep_fn=lambda _s: None,
+        status_file=status,
+        pause_file=pause_file,
+    )
+    done = threading.Event()
+
+    def run() -> None:
+        try:
+            engine.run_forever()
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    import time as _time
+
+    deadline = _time.monotonic() + 5
+    published: dict = {}
+    while _time.monotonic() < deadline:
+        try:
+            published = json.loads(status.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            published = {}
+        if published.get("state") == "paused":
+            break
+        _time.sleep(0.02)
+    # Le défilement ne démarre pas : figé AVANT la page 1 (pause active).
+    assert published.get("state") == "paused"
+    assert renderer.events == []  # aucune page jouée pendant la pause
+    # Dégel → les trois pages se jouent puis la spec est conservée (SHOW).
+    pause_file.unlink()
+    deadline = _time.monotonic() + 5
+    while _time.monotonic() < deadline:
+        if renderer.events and renderer.events[-1][0] == "image" and len(
+            renderer.events
+        ) >= 3:
+            break
+        _time.sleep(0.02)
+    assert len(renderer.events) == 3
+    assert [e[1][1] for e in renderer.events] == [5.0, 5.0, 5.0]
+
+
 def test_pending_show_multipage_in_playlist_queue(tmp_path):
     """Avec playliste en cours, le document multi-pages s'insère en tête.
 
